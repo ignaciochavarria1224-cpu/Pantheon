@@ -38,6 +38,8 @@ _ATR_FETCH_DAYS = 5
 _MIN_SCORED_TO_TRADE = 10
 # Minimum available buying power required to attempt any entry this cycle.
 _MIN_POSITION_SIZE = 500.0
+# Force EOD liquidation early enough that a scheduler tick cannot miss it.
+_MIN_EOD_CLOSE_BUFFER_MINUTES = 10
 
 
 def _compute_atr(bars: list[dict], period: int = _ATR_LOOKBACK_BARS) -> float:
@@ -158,31 +160,48 @@ class PaperTradingLoop:
 
     def _run_cycle_inner(self) -> None:
         # ------------------------------------------------------------------
-        # Step 1 — Market hours check
+        # Step 1 — Market clock / close-window check
         # ------------------------------------------------------------------
         try:
-            if not self._alpaca.is_market_open():
+            clock = self._alpaca.get_clock()
+            if not clock["is_open"]:
                 logger.debug("Market is closed — skipping trading cycle")
                 return
         except Exception as exc:
-            logger.error("is_market_open() failed: %s", exc)
+            logger.error("get_clock() failed: %s", exc)
             return
 
         # ------------------------------------------------------------------
-        # EOD close — 3:55–4:00 PM ET: close all positions, skip all entries
-        # Fires once per calendar day; subsequent ticks in the window return early.
+        # EOD close — trigger when close is within the scheduler-safe buffer.
+        # This avoids missing liquidation simply because no scheduler tick lands
+        # inside a narrow 3:55–4:00 PM ET wall-clock window.
         # ------------------------------------------------------------------
-        now_et = datetime.now(_ET)
+        clock_ts = clock.get("timestamp")
+        now_et = (
+            clock_ts.astimezone(_ET)
+            if isinstance(clock_ts, datetime)
+            else datetime.now(_ET)
+        )
         today_et = now_et.date()
-        _eod_start = now_et.replace(hour=15, minute=55, second=0, microsecond=0)
-        _eod_end   = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
+        next_close = clock.get("next_close")
+        minutes_to_close = None
+        if isinstance(next_close, datetime):
+            minutes_to_close = (next_close - clock_ts).total_seconds() / 60.0
+        close_buffer_min = max(
+            int(self._settings.RANKING_INTERVAL_MINUTES),
+            _MIN_EOD_CLOSE_BUFFER_MINUTES,
+        )
 
-        if _eod_start <= now_et < _eod_end:
+        if minutes_to_close is not None and minutes_to_close <= close_buffer_min:
             if self._eod_closed_date != today_et:
-                logger.info("EOD close window (3:55–4:00 PM ET) — closing all positions")
-                self._run_eod_close()
-                self._eod_closed_date = today_et
-            return  # skip ranking, exits, rotations, and entries during this window
+                logger.warning(
+                    "EOD close buffer reached (%.1f min to close, buffer=%d) — closing all positions",
+                    minutes_to_close,
+                    close_buffer_min,
+                )
+                if self._run_eod_close():
+                    self._eod_closed_date = today_et
+            return  # skip ranking, exits, rotations, and entries once close-all begins
 
         eod_done_today = (self._eod_closed_date == today_et)
 
@@ -573,17 +592,19 @@ class PaperTradingLoop:
                 report_date, traceback.format_exc(),
             )
 
-    def _run_eod_close(self) -> None:
+    def _run_eod_close(self) -> bool:
         """
         Close every open position at market with reason=eod_close.
-        Called once per day when the clock enters the 3:55–4:00 PM ET window.
-        Never raises — failures are logged and the position remains open.
+        Called once per day when the market is within the scheduler-safe close buffer.
+        Never raises — failures are logged and a broker-side fail-safe is attempted.
+        Returns True when the liquidation pass completed or a broker fail-safe
+        request was accepted, False when Olympus should retry on the next tick.
         """
         positions = self._position_manager.get_open_positions()
         if not positions:
-            logger.info("EOD close: no open positions to close")
-            return
-        logger.info("EOD close: closing %d open position(s) at market", len(positions))
+            logger.info("EOD close: no local open positions to close")
+        else:
+            logger.info("EOD close: closing %d local open position(s) at market", len(positions))
         for position in positions:
             exit_price = position.current_price
             record = self._execution.exit_position(
@@ -604,3 +625,30 @@ class PaperTradingLoop:
                     "EOD close: exit order failed for %s — position remains open",
                     position.symbol,
                 )
+
+        # Broker-level fail-safe:
+        # If local exits missed anything, ask Alpaca to cancel open orders and
+        # liquidate every remaining position before the closing bell.
+        broker_positions = self._alpaca.get_positions()
+        broker_orders = self._alpaca.get_open_orders()
+        if broker_positions or broker_orders:
+            logger.warning(
+                "EOD fail-safe engaged: broker still shows %d position(s) and %d open order(s)",
+                len(broker_positions),
+                len(broker_orders),
+            )
+            if self._alpaca.close_all_positions(cancel_orders=True):
+                # Clear any remaining local state so Olympus does not carry
+                # stale open positions into after-hours or the next session.
+                for position in self._position_manager.get_open_positions():
+                    self._position_manager.remove_position(position.symbol)
+                    logger.warning(
+                        "EOD fail-safe cleared local position state for %s after broker liquidation request",
+                        position.symbol,
+                    )
+                return True
+            else:
+                logger.error("EOD fail-safe liquidation request failed — broker positions may remain open")
+                return False
+
+        return True

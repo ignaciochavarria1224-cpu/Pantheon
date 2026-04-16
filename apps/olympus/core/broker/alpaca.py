@@ -212,6 +212,40 @@ class AlpacaClient:
             logger.error("AlpacaClient.get_open_orders() failed: %s", exc)
             return []
 
+    def cancel_all_orders(self) -> bool:
+        """
+        Cancel all open orders in the paper account.
+        Returns True on success, False on failure.
+        """
+        try:
+            responses = self._client.cancel_orders()
+            logger.info("Cancelled %d open Alpaca order(s)", len(responses))
+            return True
+        except Exception as exc:
+            logger.error("AlpacaClient.cancel_all_orders() failed: %s", exc)
+            return False
+
+    def close_all_positions(self, cancel_orders: bool = True) -> bool:
+        """
+        Ask Alpaca to liquidate all open positions, optionally cancelling open orders first.
+        Returns True when the liquidation request is accepted, False on failure.
+        """
+        try:
+            responses = self._client.close_all_positions(cancel_orders=cancel_orders)
+            logger.warning(
+                "Broker fail-safe liquidation submitted for %d position(s) (cancel_orders=%s)",
+                len(responses),
+                cancel_orders,
+            )
+            return True
+        except Exception as exc:
+            logger.error(
+                "AlpacaClient.close_all_positions(cancel_orders=%s) failed: %s",
+                cancel_orders,
+                exc,
+            )
+            return False
+
     def ping(self) -> tuple[bool, float]:
         """
         Lightweight connectivity check.

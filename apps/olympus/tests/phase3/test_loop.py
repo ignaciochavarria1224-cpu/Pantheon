@@ -89,7 +89,17 @@ def _build_loop(
     """Build a PaperTradingLoop with all dependencies mocked."""
     mock_alpaca = MagicMock()
     mock_alpaca.is_market_open.return_value = is_market_open
+    now = datetime.now(timezone.utc)
+    mock_alpaca.get_clock.return_value = {
+        "timestamp": now,
+        "is_open": is_market_open,
+        "next_open": now,
+        "next_close": now.replace(hour=20, minute=0, second=0, microsecond=0),
+    }
     mock_alpaca.get_account.return_value = {"equity": 100_000.0, "buying_power": 50_000.0}
+    mock_alpaca.get_positions.return_value = []
+    mock_alpaca.get_open_orders.return_value = []
+    mock_alpaca.close_all_positions.return_value = True
 
     mock_ranking = MagicMock()
     mock_ranking.get_latest.return_value = ranked_universe
@@ -127,7 +137,7 @@ def test_run_cycle_returns_cleanly_when_market_closed():
 
     loop._run_cycle()  # Must not raise
 
-    mock_alpaca.is_market_open.assert_called_once()
+    mock_alpaca.get_clock.assert_called_once()
     mock_ranking.get_latest.assert_not_called()
 
 
@@ -272,12 +282,12 @@ def test_cycle_count_increments_after_full_cycle():
 
 def test_last_error_set_when_is_market_open_raises():
     loop, mock_alpaca, _, _, _, _ = _build_loop()
-    mock_alpaca.is_market_open.side_effect = RuntimeError("Hard crash")
+    mock_alpaca.get_clock.side_effect = RuntimeError("Hard crash")
 
     loop._run_cycle()
 
     # The loop should survive and set last_error... actually the implementation
-    # returns early in this case; the outer try/except catches only if is_market_open
+    # returns early in this case; the outer try/except catches only if get_clock
     # raises and we do not catch it inside. Let's verify it does not raise.
     # (The inner error handling returns early, so last_error may or may not be set)
     # The key contract is: _run_cycle() never raises.
@@ -311,3 +321,55 @@ def test_run_cycle_returns_early_on_stale_ranking():
 
     # evaluate_exits should not have been called — returned early on stale ranking
     mock_pm.evaluate_exits.assert_not_called()
+
+
+def test_eod_close_triggers_when_next_close_is_within_scheduler_buffer():
+    loop, mock_alpaca, mock_ranking, mock_pm, _, _ = _build_loop(
+        is_market_open=True,
+        ranked_universe=_make_fresh_ranking(),
+    )
+    now = datetime(2026, 4, 15, 19, 45, tzinfo=timezone.utc)  # 15:45 ET
+    mock_alpaca.get_clock.return_value = {
+        "timestamp": now,
+        "is_open": True,
+        "next_open": now,
+        "next_close": datetime(2026, 4, 15, 20, 0, tzinfo=timezone.utc),
+    }
+
+    with patch.object(loop, "_run_eod_close") as mock_eod:
+        loop._run_cycle()
+
+    mock_eod.assert_called_once()
+    mock_ranking.get_latest.assert_not_called()
+    mock_pm.evaluate_exits.assert_not_called()
+
+
+def test_eod_close_uses_broker_fail_safe_when_positions_remain():
+    loop, mock_alpaca, _, mock_pm, mock_execution, _ = _build_loop(
+        is_market_open=True,
+        ranked_universe=_make_fresh_ranking(),
+    )
+    position = Position(
+        position_id="pos-1",
+        symbol="AAPL",
+        direction=Direction.LONG,
+        entry_price=100.0,
+        stop_price=95.0,
+        target_price=110.0,
+        size=10,
+        entry_time=datetime.now(timezone.utc),
+        rank_at_entry=1,
+        score_at_entry=75.0,
+        current_price=101.0,
+        unrealized_pnl=10.0,
+        status=TradeStatus.OPEN,
+    )
+    mock_pm.get_open_positions.side_effect = [[position], [position], []]
+    mock_execution.exit_position.return_value = None
+    mock_alpaca.get_positions.return_value = [{"symbol": "AAPL"}]
+    mock_alpaca.get_open_orders.return_value = [{"symbol": "AAPL", "status": "new"}]
+
+    loop._run_eod_close()
+
+    mock_alpaca.close_all_positions.assert_called_once_with(cancel_orders=True)
+    mock_pm.remove_position.assert_called_once_with("AAPL")
