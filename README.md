@@ -43,3 +43,15 @@ Excluded from version control:
 
 See [docs/SYSTEM_OVERVIEW.md](docs/SYSTEM_OVERVIEW.md) for the high-level model.
 
+## Documentation Rule
+
+Each major system in this repository should maintain its own living README:
+
+- `apps/apollo/README.md`
+- `apps/blackbook/README.md`
+- `apps/maridian/README.md`
+
+These files are not optional polish. They are operational summaries of purpose, boundaries, and current state.
+
+Whenever a system changes in a material way, its README should be updated in the same commit if the change affects architecture, responsibilities, interfaces, runtime, or subsystem boundaries.
+
