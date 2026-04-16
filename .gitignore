@@ -37,6 +37,12 @@ apps/apollo/data/
 apps/apollo/logs/
 apps/apollo/mind_vault/
 
+# Olympus runtime data
+apps/olympus/data/
+apps/olympus/logs/
+apps/olympus/*.pid
+apps/olympus/.pytest_cache/
+
 # Maridian private/local data
 apps/maridian/raw/
 apps/maridian/wiki/

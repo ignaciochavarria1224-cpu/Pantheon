@@ -6,6 +6,7 @@
 - `Apollo` is the interface, voice, and delivery shell.
 - `BlackBook` is the financial and operational source of truth.
 - `Maridian` is the reflective and cognitive source material.
+- `Olympus` is the market execution and trading memory source of truth.
 
 ## Current Repo Mapping
 
@@ -15,11 +16,8 @@
   Contains the BlackBook Reflex app and database/query logic.
 - `apps/maridian`
   Contains Maridian code only. Private vault content and derived personal data are intentionally excluded from Git.
-
-## What Is Not Here Yet
-
-- `Olympus`
-  The live source of truth is on the PC, so it will be added later from that machine rather than copied from laptop Dropbox.
+- `apps/olympus`
+  Contains the Olympus trading engine code, tests, and configuration templates. Live runtime data, logs, and local databases remain excluded from Git.
 
 ## Current Direction
 
@@ -28,5 +26,5 @@ The immediate direction is:
 1. keep Apollo as the visible product
 2. continue moving intelligence responsibilities into Pantheon
 3. run the local model stack on the PC
-4. add Olympus from the PC once the runtime machine becomes the primary host
+4. use Olympus as the trading execution layer while Apollo and Pantheon consume its outputs
 
