@@ -40,10 +40,21 @@ This is the main operational process. It:
 
 It also uses a PID lockfile so two live runtimes do not start accidentally on the same machine.
 
+The runtime also persists cycle diagnostics and data-quality events so post-session review can measure whether the execution filters, broker state, and memory writes are behaving cleanly.
+
 ### `config/`
 Environment-driven configuration.
 
 `config/settings.py` defines Olympus's runtime contract: Alpaca credentials, market hours, ranking cadence, cache paths, log paths, trading risk limits, and storage paths.
+
+Important tuning groups now include:
+
+- side-specific entry thresholds for longs and shorts
+- regime classification and mixed-market throttles
+- ATR sanity bounds for execution eligibility
+- symbol cooldown and suppression controls
+- sector concentration limits
+- stalled-trade and rotation sensitivity
 
 ### `core/`
 The trading engine itself.
@@ -58,6 +69,10 @@ Important areas include:
   feature computation, scoring, classification, and cycle orchestration
 - `core/trading/`
   execution, position management, sizing, risk logic, and the live loop
+- `core/trading/regime.py`
+  regime classification and market-quality gating
+- `core/trading/qualification.py`
+  side-aware entry qualification before order placement
 - `core/memory/`
   SQLite initialization, ingestion, repository access, and memory writing
 - `core/reporting/`
@@ -104,12 +119,38 @@ It already has:
 - Alpaca paper broker connectivity
 - a hardcoded liquid-equity universe
 - repeated ranking cycles over recent intraday bars
-- risk-aware paper-trading flow
+- a selective "rank, qualify, then trade" execution flow
+- side-specific long and short entry thresholds
+- lightweight regime gating for trend, mixed, and degraded conditions
+- dynamic symbol cooldown and suppression controls
+- risk-aware paper-trading flow with flat-by-close enforcement
 - SQLite-backed trade memory
 - JSON ingestion for trade and ranking artifacts
+- cycle diagnostics and daily reporting hooks for qualification and data quality
 - tests across the major subsystems
 
 What it does not yet claim is live-money execution. The present code is organized around paper-trading, runtime stability, and structured storage first.
+
+## Profitability Upgrade Highlights
+
+Olympus now layers a moderate profitability-control system on top of the original ranking engine rather than treating every ranked name as equally tradable.
+
+The current execution model is:
+
+1. rank the full universe
+2. classify the current regime
+3. qualify symbols with side-aware filters
+4. enforce exposure, concentration, cooldown, and order-safety checks
+5. manage exits with stop, target, rotation, stalled-trade pressure, and mandatory end-of-day liquidation
+
+The most important upgrades in the current build are:
+
+- separate long and short score, RVOL, and position-cap thresholds
+- a regime classifier that can allow, constrain, or block entries
+- qualification gates using normalized score, RVOL, range position, VWAP deviation, and ATR sanity
+- sector concentration checks and dynamic symbol suppression after repeated poor outcomes
+- more proactive exits in mixed conditions and less eager rotation in cleaner trend conditions
+- persistent cycle diagnostics so reporting can explain what the system accepted, rejected, and why
 
 ## Runtime And Dependencies
 
@@ -131,6 +172,7 @@ Runtime data is intentionally excluded from Git. On a working machine, Olympus w
 - ranking exports
 - JSON trade records
 - `olympus.db`
+- generated daily reports and performance logs
 
 ## Quick Start
 
@@ -174,7 +216,9 @@ Olympus owns:
 - ranking outputs and signal generation
 - paper-trade execution records
 - trade-memory persistence
+- execution qualification and regime gating behavior
 - trading runtime health and scheduling behavior
+- post-trade diagnostics for data quality and broker-state consistency
 
 Olympus does not own:
 
