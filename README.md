@@ -1,1 +1,45 @@
 # Pantheon
+
+Pantheon is the system behind Apollo.
+
+This repository is the private monorepo for the personal operating system stack:
+
+- `apps/apollo` - the interface layer and current Pantheon runtime seed
+- `apps/blackbook` - finance, ledger, and operational memory
+- `apps/maridian` - second-brain and reflective processing system
+
+`Olympus` is intentionally not included here yet because the real code lives on the PC runtime machine and will be added from there later.
+
+## Structure
+
+```text
+Pantheon/
+  apps/
+    apollo/
+    blackbook/
+    maridian/
+  docs/
+  README.md
+  .gitignore
+```
+
+## Safety Rules
+
+This repo is set up to keep code and architecture in Git, while keeping secrets and private runtime data out.
+
+Excluded from version control:
+
+- `.env` files and secrets
+- local databases and indexes
+- Apollo logs and runtime data
+- Maridian private journal/vault content
+- build artifacts, caches, `node_modules`, and generated web folders
+
+## Current Architecture
+
+- `Apollo` is the user-facing app, voice, and chat surface.
+- `Pantheon` currently lives inside `apps/apollo/pantheon` as the new hidden reasoning layer behind Apollo.
+- `BlackBook` and `Maridian` remain separate subsystems that Pantheon reads from and coordinates.
+
+See [docs/SYSTEM_OVERVIEW.md](docs/SYSTEM_OVERVIEW.md) for the high-level model.
+
