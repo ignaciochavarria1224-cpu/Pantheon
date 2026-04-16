@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from core.models import (
-    Direction, LoopState, Position, RankedSymbol, RankedUniverse,
+    BarFeatures, Direction, LoopState, Position, RankedSymbol, RankedUniverse,
     TradeRecord, TradeStatus,
 )
 from core.trading.loop import PaperTradingLoop
@@ -30,12 +30,43 @@ def _make_settings():
     s = MagicMock()
     s.RANKING_INTERVAL_MINUTES = 20
     s.MAX_OPEN_POSITIONS = 20
+    s.LONG_MAX_OPEN_POSITIONS = 8
+    s.SHORT_MAX_OPEN_POSITIONS = 12
     s.MAX_DAILY_LOSS_PCT = 0.02
     s.MIN_REWARD_RISK = 1.8
     s.MAX_RISK_PER_TRADE_PCT = 0.005
     s.ATR_STOP_MULTIPLIER = 1.5
     s.ATR_TARGET_MULTIPLIER = 3.0
+    s.MIN_ATR_PCT = 0.001
+    s.MAX_ATR_PCT = 0.25
     s.ROTATION_RANK_DROP_THRESHOLD = 15
+    s.REGIME_TREND_ROTATION_BUFFER = 4
+    s.REGIME_MIXED_ROTATION_PENALTY = 3
+    s.LONG_ENTRY_SCORE_THRESHOLD = 72.0
+    s.SHORT_ENTRY_SCORE_THRESHOLD = 28.0
+    s.LONG_MIN_RVOL = 1.15
+    s.SHORT_MIN_RVOL = 1.05
+    s.LONG_MIN_RANGE_POSITION = 0.55
+    s.SHORT_MAX_RANGE_POSITION = 0.45
+    s.LONG_MAX_VWAP_DEVIATION = 0.03
+    s.SHORT_MAX_VWAP_DEVIATION = 0.03
+    s.MAX_CANDIDATES_PER_SIDE = 5
+    s.REGIME_MIN_SCORED_COUNT = 10
+    s.REGIME_MAX_ERROR_COUNT = 10
+    s.REGIME_TOP_N = 5
+    s.REGIME_TREND_STRENGTH_MIN = 70.0
+    s.REGIME_MIXED_STRENGTH_MIN = 58.0
+    s.REGIME_MIXED_POSITION_SCALE = 0.5
+    s.REGIME_MIXED_SCORE_BONUS = 2.0
+    s.SYMBOL_COOLDOWN_TRIGGER_STOPS = 2
+    s.SYMBOL_COOLDOWN_MINUTES = 90
+    s.SYMBOL_SUPPRESSION_MIN_TRADES = 3
+    s.SYMBOL_SUPPRESSION_MAX_STOP_RATE = 0.7
+    s.SYMBOL_SUPPRESSION_MAX_PNL = -50.0
+    s.SECTOR_CONCENTRATION_LIMIT = 2
+    s.STALLED_TRADE_MINUTES = 60
+    s.STALLED_TRADE_PROGRESS_FLOOR = 0.2
+    s.STALLED_TRADE_RANK_BUFFER = 3
     s.TRADES_DIR = MagicMock(spec=Path)
     s.TRADES_DIR.__truediv__ = lambda self, other: MagicMock(spec=Path)
     return s
@@ -77,6 +108,77 @@ def _make_trade_record(symbol="AAPL") -> TradeRecord:
         rank_at_exit=1,
         score_at_exit=75.0,
         status="closed",
+    )
+
+
+def _make_position(symbol="AAPL", direction=Direction.LONG) -> Position:
+    now = datetime.now(timezone.utc)
+    return Position(
+        position_id=f"pos-{symbol}",
+        symbol=symbol,
+        direction=direction,
+        entry_price=100.0,
+        stop_price=97.0 if direction == Direction.LONG else 103.0,
+        target_price=109.0 if direction == Direction.LONG else 91.0,
+        size=10,
+        entry_time=now,
+        rank_at_entry=1,
+        score_at_entry=80.0,
+        current_price=100.0,
+        unrealized_pnl=0.0,
+        status=TradeStatus.OPEN,
+    )
+
+
+def _make_features(symbol="AAPL", normalized_score=80.0, rvol=1.5, range_position=0.8):
+    now = datetime.now(timezone.utc)
+    return BarFeatures(
+        symbol=symbol,
+        timestamp=now,
+        close=100.0,
+        volume=1_000_000.0,
+        roc_5=1.0,
+        roc_10=2.0,
+        roc_20=4.0,
+        acceleration=0.2,
+        rvol=rvol,
+        vwap_deviation=0.01,
+        range_position=range_position,
+        raw_score=0.8,
+        normalized_score=normalized_score,
+    )
+
+
+def _make_ranked_symbol(symbol="AAPL", direction="long", score=80.0, rank=1):
+    if direction == "short":
+        features = _make_features(
+            symbol=symbol,
+            normalized_score=score,
+            rvol=1.4,
+            range_position=0.2,
+        )
+    else:
+        features = _make_features(symbol=symbol, normalized_score=score)
+    return RankedSymbol(
+        symbol=symbol,
+        score=score,
+        direction=direction,
+        rank=rank,
+        features=features,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+
+def _make_ranked_universe(longs=None, shorts=None, scored_count=100, error_count=0):
+    return RankedUniverse(
+        cycle_id="ranked-test",
+        timestamp=datetime.now(timezone.utc),
+        longs=longs or [],
+        shorts=shorts or [],
+        universe_size=100,
+        scored_count=scored_count,
+        error_count=error_count,
+        duration_seconds=1.0,
     )
 
 
@@ -373,3 +475,81 @@ def test_eod_close_uses_broker_fail_safe_when_positions_remain():
 
     mock_alpaca.close_all_positions.assert_called_once_with(cancel_orders=True)
     mock_pm.remove_position.assert_called_once_with("AAPL")
+
+
+def test_degraded_regime_skips_entries():
+    ranked = _make_ranked_universe(
+        longs=[_make_ranked_symbol("AAPL", "long", 82.0)],
+        shorts=[_make_ranked_symbol("TSLA", "short", 18.0)],
+        scored_count=100,
+        error_count=99,
+    )
+    loop, _, _, _, mock_execution, mock_fetcher = _build_loop(
+        is_market_open=True,
+        ranked_universe=ranked,
+    )
+    mock_fetcher.fetch_latest_bars.return_value = pd.DataFrame([
+        {"symbol": "AAPL", "close": 100.0, "high": 101.0, "low": 99.0},
+        {"symbol": "TSLA", "close": 90.0, "high": 91.0, "low": 89.0},
+    ])
+
+    loop._run_cycle()
+
+    mock_execution.enter_position.assert_not_called()
+
+
+def test_long_side_cap_still_allows_short_entry():
+    ranked = _make_ranked_universe(
+        longs=[_make_ranked_symbol("AAPL", "long", 85.0)],
+        shorts=[_make_ranked_symbol("TSLA", "short", 20.0)],
+    )
+    loop, _, _, mock_pm, mock_execution, mock_fetcher = _build_loop(
+        is_market_open=True,
+        ranked_universe=ranked,
+    )
+    long_positions = [
+        _make_position(symbol=f"L{i}", direction=Direction.LONG)
+        for i in range(8)
+    ]
+    mock_pm.get_open_positions.side_effect = lambda: list(long_positions)
+    mock_fetcher.fetch_latest_bars.return_value = pd.DataFrame([
+        {"symbol": "AAPL", "close": 100.0, "high": 101.0, "low": 99.0},
+        {"symbol": "TSLA", "close": 90.0, "high": 91.0, "low": 89.0},
+    ])
+    mock_fetcher.fetch_historical_bars.return_value = pd.DataFrame([
+        {"symbol": "AAPL", "timestamp": "2026-04-15T13:30:00+00:00", "close": 100.0, "high": 101.0, "low": 99.0},
+        {"symbol": "TSLA", "timestamp": "2026-04-15T13:30:00+00:00", "close": 90.0, "high": 91.0, "low": 89.0},
+    ] * 20)
+    mock_execution.enter_position.return_value = _make_position(symbol="TSLA", direction=Direction.SHORT)
+
+    loop._run_cycle()
+
+    mock_execution.enter_position.assert_called_once()
+    assert mock_execution.enter_position.call_args.kwargs["symbol"] == "TSLA"
+
+
+def test_symbol_cooldown_blocks_reentry_after_repeated_stops():
+    ranked = _make_ranked_universe(
+        longs=[_make_ranked_symbol("AAPL", "long", 84.0)],
+    )
+    loop, _, _, _, mock_execution, mock_fetcher = _build_loop(
+        is_market_open=True,
+        ranked_universe=ranked,
+    )
+    mock_fetcher.fetch_latest_bars.return_value = pd.DataFrame([
+        {"symbol": "AAPL", "close": 100.0, "high": 101.0, "low": 99.0},
+    ])
+    mock_fetcher.fetch_historical_bars.return_value = pd.DataFrame([
+        {"symbol": "AAPL", "timestamp": "2026-04-15T13:30:00+00:00", "close": 100.0, "high": 101.0, "low": 99.0},
+    ] * 20)
+
+    trade_one = _make_trade_record("AAPL")
+    trade_one.exit_reason = "stop"
+    trade_two = _make_trade_record("AAPL")
+    trade_two.exit_reason = "stop"
+    loop._register_completed_trade(trade_one)
+    loop._register_completed_trade(trade_two)
+
+    loop._run_cycle()
+
+    mock_execution.enter_position.assert_not_called()

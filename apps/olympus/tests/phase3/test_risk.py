@@ -260,6 +260,33 @@ def test_gate5_rr_calculation_is_correct():
     assert ok
 
 
+def test_side_specific_cap_blocks_new_longs():
+    settings = _make_settings(max_open=10)
+    positions = [_make_position("AAPL", Direction.LONG), _make_position("MSFT", Direction.LONG)]
+    ok, reason = validate_entry(**_passing_kwargs(
+        settings=settings,
+        open_positions=positions,
+        side_open_positions=positions,
+        max_positions_for_side=2,
+    ))
+    assert not ok
+    assert "max long positions" in reason.lower()
+
+
+def test_sector_concentration_blocks_entry():
+    settings = _make_settings(max_open=10)
+    positions = [_make_position("AAPL"), _make_position("MSFT")]
+    ok, reason = validate_entry(**_passing_kwargs(
+        settings=settings,
+        open_positions=positions,
+        sector="technology",
+        sector_by_symbol={"AAPL": "technology", "MSFT": "technology"},
+        sector_limit=2,
+    ))
+    assert not ok
+    assert "sector concentration" in reason.lower()
+
+
 # ---------------------------------------------------------------------------
 # Gate 6 — Minimum position size
 # ---------------------------------------------------------------------------

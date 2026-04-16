@@ -23,6 +23,11 @@ def validate_entry(
     daily_pnl: float,
     equity: float,
     settings,
+    side_open_positions: "list[Position] | None" = None,
+    max_positions_for_side: int | None = None,
+    sector: str | None = None,
+    sector_by_symbol: dict[str, str] | None = None,
+    sector_limit: int | None = None,
 ) -> tuple[bool, str]:
     """
     6-gate pre-entry validator. All gates must pass before an order is placed.
@@ -39,11 +44,30 @@ def validate_entry(
             f"max open positions reached "
             f"({len(open_positions)}/{settings.MAX_OPEN_POSITIONS})"
         )
+    if max_positions_for_side is not None and side_open_positions is not None:
+        if len(side_open_positions) >= max_positions_for_side:
+            return False, (
+                f"max {direction.value} positions reached "
+                f"({len(side_open_positions)}/{max_positions_for_side})"
+            )
 
     # Gate 2 — No duplicate symbol
     open_symbols = {p.symbol for p in open_positions}
     if symbol in open_symbols:
         return False, f"duplicate symbol — {symbol} already has an open position"
+
+    # Gate 2b — Sector concentration
+    if sector and sector_by_symbol and sector_limit is not None and sector_limit > 0:
+        same_sector = sum(
+            1
+            for position in open_positions
+            if sector_by_symbol.get(position.symbol) == sector
+        )
+        if same_sector >= sector_limit:
+            return False, (
+                f"sector concentration reached for {sector} "
+                f"({same_sector}/{sector_limit})"
+            )
 
     # Gate 3 — Daily loss limit
     if equity > 0 and daily_pnl <= -(equity * settings.MAX_DAILY_LOSS_PCT):

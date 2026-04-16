@@ -172,6 +172,7 @@ class PositionManager:
     def evaluate_rotations(
         self,
         ranked_universe: RankedUniverse,
+        threshold_override: Optional[int] = None,
     ) -> list[str]:
         """
         Identify open positions that should be exited due to rank deterioration.
@@ -186,7 +187,11 @@ class PositionManager:
         """
         long_ranks: dict[str, int] = {rs.symbol: rs.rank for rs in ranked_universe.longs}
         short_ranks: dict[str, int] = {rs.symbol: rs.rank for rs in ranked_universe.shorts}
-        threshold = self._settings.ROTATION_RANK_DROP_THRESHOLD
+        threshold = (
+            threshold_override
+            if threshold_override is not None
+            else self._settings.ROTATION_RANK_DROP_THRESHOLD
+        )
 
         to_rotate: list[str] = []
         with self._lock:

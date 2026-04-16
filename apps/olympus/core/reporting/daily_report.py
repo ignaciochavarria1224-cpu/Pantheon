@@ -241,6 +241,10 @@ class DailyReportGenerator:
             c for c in raw_cycles
             if c["scored_count"] < _DEGRADED_SCORED_THRESHOLD
         ]
+        data["zero_scored_cycles"] = [
+            c for c in raw_cycles
+            if c["scored_count"] == 0
+        ]
 
         # -- Exit-reason breakdown for today --
         rows = conn.execute(
@@ -286,6 +290,32 @@ class DailyReportGenerator:
         ).fetchall()
         data["momentum_buckets"] = [dict(r) for r in rows]
 
+        rows = conn.execute(
+            """
+            SELECT event_time, event_type, symbol, description, metadata_json
+            FROM system_events
+            WHERE event_time >= ? AND event_time <= ?
+            ORDER BY event_time ASC
+            """,
+            (start_utc, end_utc),
+        ).fetchall()
+        system_events = [dict(r) for r in rows]
+        for event in system_events:
+            try:
+                event["metadata"] = json.loads(event["metadata_json"] or "{}")
+            except json.JSONDecodeError:
+                event["metadata"] = {}
+        data["system_events"] = system_events
+        data["cycle_diagnostics"] = [
+            event for event in system_events if event["event_type"] == "cycle_diagnostics"
+        ]
+        data["data_quality_events"] = [
+            event for event in system_events if event["event_type"] == "data_quality"
+        ]
+        data["broker_mismatch_events"] = [
+            event for event in system_events if event["event_type"] == "broker_mismatch"
+        ]
+
         # -- Log errors for today --
         data["log_errors"] = self._read_log_errors(report_date)
 
@@ -327,6 +357,8 @@ class DailyReportGenerator:
 
         long_count  = sum(1 for t in trades if t["direction"] == "long")
         short_count = sum(1 for t in trades if t["direction"] == "short")
+        long_pnl = sum(t["realized_pnl"] for t in trades if t["direction"] == "long")
+        short_pnl = sum(t["realized_pnl"] for t in trades if t["direction"] == "short")
 
         lines = [
             "## DAILY SUMMARY",
@@ -336,6 +368,7 @@ class DailyReportGenerator:
             f"| Date | {report_date.isoformat()} |",
             f"| Session | 09:30 – 16:00 ET |",
             f"| Total Trades | {n} ({long_count} long / {short_count} short) |",
+            f"| Long / Short P&L | ${long_pnl:+.2f} / ${short_pnl:+.2f} |",
             f"| Winners / Losers | {win_count} / {loss_count} |",
             f"| Win Rate | {win_rate:.1f}% |",
             f"| Total P&L | ${total_pnl:+.2f} |",
@@ -529,6 +562,31 @@ class DailyReportGenerator:
                 "",
             ]
 
+        stop_trades = [t for t in trades if t["exit_reason"] == "stop"]
+        if stop_trades:
+            stop_counter = Counter(t["symbol"] for t in stop_trades)
+            lines += [
+                "### Stop-Loss Concentration",
+                "",
+                "Most frequent stop-outs: "
+                + ", ".join(f"{symbol} ({count})" for symbol, count in stop_counter.most_common(5)),
+                "",
+            ]
+
+        symbol_pnl: defaultdict[str, float] = defaultdict(float)
+        for trade in trades:
+            symbol_pnl[trade["symbol"]] += float(trade["realized_pnl"])
+        if symbol_pnl:
+            best_symbols = sorted(symbol_pnl.items(), key=lambda item: item[1], reverse=True)[:5]
+            worst_symbols = sorted(symbol_pnl.items(), key=lambda item: item[1])[:5]
+            lines += [
+                "### Symbol Leaders / Laggards",
+                "",
+                "**Best:** " + ", ".join(f"{symbol} (${pnl:+.2f})" for symbol, pnl in best_symbols),
+                "**Worst:** " + ", ".join(f"{symbol} (${pnl:+.2f})" for symbol, pnl in worst_symbols),
+                "",
+            ]
+
         return lines
 
     def _section_system_health(self, data: dict, report_date: date) -> list[str]:
@@ -537,6 +595,10 @@ class DailyReportGenerator:
         errors = data["log_errors"]
         degraded = data["degraded_cycles"]
         cycles = data["cycles"]
+        zero_scored = data["zero_scored_cycles"]
+        data_quality_events = data["data_quality_events"]
+        broker_mismatch_events = data["broker_mismatch_events"]
+        cycle_diagnostics = data["cycle_diagnostics"]
 
         # Error summary
         if not errors:
@@ -567,6 +629,28 @@ class DailyReportGenerator:
                 lines.append(f"  - {ct_str}: scored={c['scored_count']} / {c['universe_size']}")
         lines.append("")
 
+        if zero_scored:
+            lines.append(f"**Zero-scored cycles:** {len(zero_scored)}")
+        else:
+            lines.append("**Zero-scored cycles:** 0 OK")
+        lines.append("")
+
+        if data_quality_events:
+            lines.append(f"**Data-quality events:** {len(data_quality_events)}")
+            for event in data_quality_events[:10]:
+                issue = event.get("metadata", {}).get("issue", "unknown_issue")
+                symbol = event.get("symbol") or "-"
+                lines.append(f"  - {issue} | {symbol} | {event['description']}")
+        else:
+            lines.append("**Data-quality events:** 0 OK")
+        lines.append("")
+
+        if broker_mismatch_events:
+            lines.append(f"**Broker mismatch events:** {len(broker_mismatch_events)}")
+        else:
+            lines.append("**Broker mismatch events:** 0 OK")
+        lines.append("")
+
         # API retry events (look for retry pattern in errors)
         retry_count = sum(
             1 for _, msg, _ in _group_errors(errors) if "retrying" in msg.lower() or "attempt" in msg.lower()
@@ -587,6 +671,33 @@ class DailyReportGenerator:
                 f"avg scored={avg_scored:.0f} | min scored={min_scored}"
             )
         lines.append("")
+
+        if cycle_diagnostics:
+            regime_counter = Counter(
+                event.get("metadata", {}).get("regime", {}).get("name", "unknown")
+                for event in cycle_diagnostics
+            )
+            rejection_counter: Counter = Counter()
+            passed_long = 0
+            passed_short = 0
+            for event in cycle_diagnostics:
+                metadata = event.get("metadata", {})
+                qualification = metadata.get("qualification", {})
+                passed = qualification.get("passed", {})
+                passed_long += int(passed.get("long", 0))
+                passed_short += int(passed.get("short", 0))
+                rejection_counter.update(qualification.get("rejected", {}))
+            lines.append(
+                "**Regime distribution:** "
+                + ", ".join(f"{name} ({count})" for name, count in regime_counter.items())
+            )
+            lines.append(f"**Qualified candidates:** long={passed_long} short={passed_short}")
+            if rejection_counter:
+                lines.append(
+                    "**Top rejection reasons:** "
+                    + ", ".join(f"{reason} ({count})" for reason, count in rejection_counter.most_common(5))
+                )
+            lines.append("")
 
         return lines
 

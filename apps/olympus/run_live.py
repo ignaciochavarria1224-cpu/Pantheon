@@ -190,6 +190,7 @@ def main() -> None:
         fetcher=fetcher,
         settings=settings,
         alpaca_client=alpaca,
+        universe_manager=universe,
     )
 
     log.info("All components initialized — MemoryAwarePaperTradingLoop ready")

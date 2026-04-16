@@ -12,12 +12,17 @@ import threading
 import traceback
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from zoneinfo import ZoneInfo
 
 from core.logger import get_logger
 from core.models import Direction, LoopState, TradeRecord
 from core.scheduler import Scheduler
+from core.trading.qualification import (
+    build_symbol_trade_stats,
+    qualify_ranked_symbol,
+)
+from core.trading.regime import classify_regime
 from core.trading.risk import validate_entry
 from core.trading.sizing import calculate_size, calculate_stop_and_target
 
@@ -27,6 +32,7 @@ if TYPE_CHECKING:
     from core.ranking.cycle import RankingCycle
     from core.trading.execution import ExecutionEngine
     from core.trading.manager import PositionManager
+    from core.universe import UniverseManager
 
 logger = get_logger(__name__)
 
@@ -74,6 +80,7 @@ class PaperTradingLoop:
         fetcher: "DataFetcher",
         settings,
         alpaca_client: "AlpacaClient",
+        universe_manager: Optional["UniverseManager"] = None,
     ) -> None:
         self._ranking_cycle = ranking_cycle
         self._position_manager = position_manager
@@ -81,6 +88,7 @@ class PaperTradingLoop:
         self._fetcher = fetcher
         self._settings = settings
         self._alpaca = alpaca_client
+        self._universe = universe_manager
 
         self._completed_trades: list[TradeRecord] = []
         self._trades_lock = threading.Lock()
@@ -88,6 +96,7 @@ class PaperTradingLoop:
         self._cycle_count = 0
         self._eod_closed_date: Optional[date] = None      # set when EOD close-all fires
         self._report_generated_date: Optional[date] = None  # set when daily report is written
+        self._last_cycle_diagnostics: dict[str, Any] = {}
 
         self._state = LoopState(
             is_running=False,
@@ -139,6 +148,11 @@ class PaperTradingLoop:
         with self._trades_lock:
             return list(self._completed_trades)
 
+    def get_last_cycle_diagnostics(self) -> dict[str, Any]:
+        """Return the most recent cycle diagnostics snapshot."""
+        with self._state_lock:
+            return dict(self._last_cycle_diagnostics)
+
     # ------------------------------------------------------------------
     # Cycle — never raises
     # ------------------------------------------------------------------
@@ -159,6 +173,19 @@ class PaperTradingLoop:
                 )
 
     def _run_cycle_inner(self) -> None:
+        diagnostics: dict[str, Any] = {
+            "cycle_time": datetime.now(timezone.utc).isoformat(),
+            "regime": {},
+            "qualification": {
+                "passed": {"long": 0, "short": 0},
+                "rejected": {},
+            },
+            "entries": {"attempted": 0, "filled": 0},
+            "exits": {"stops_targets": 0, "rotations": 0},
+            "data_quality": {},
+            "broker_state": {},
+        }
+
         # ------------------------------------------------------------------
         # Step 1 — Market clock / close-window check
         # ------------------------------------------------------------------
@@ -232,17 +259,20 @@ class PaperTradingLoop:
             )
             return
 
+        regime = classify_regime(ranked, self._settings)
+        diagnostics["regime"] = regime.to_dict()
+
         # ------------------------------------------------------------------
         # Step 3 — Fetch latest bars for open positions + top candidates
         # ------------------------------------------------------------------
         open_positions = self._position_manager.get_open_positions()
-        top_longs = self._ranking_cycle.get_top_longs(n=10)
-        top_shorts = self._ranking_cycle.get_top_shorts(n=10)
+        all_longs = list(ranked.longs)
+        all_shorts = list(ranked.shorts)
 
         needed_symbols = list(set(
             [p.symbol for p in open_positions]
-            + [rs.symbol for rs in top_longs]
-            + [rs.symbol for rs in top_shorts]
+            + [rs.symbol for rs in all_longs]
+            + [rs.symbol for rs in all_shorts]
         ))
 
         latest_bars: dict[str, dict] = {}
@@ -269,11 +299,31 @@ class PaperTradingLoop:
         for record in exit_records:
             self._persist_trade(record)
             self._register_completed_trade(record)
+        diagnostics["exits"]["stops_targets"] = len(exit_records)
 
         # ------------------------------------------------------------------
         # Step 6 — Evaluate rotations and exit dropped positions
         # ------------------------------------------------------------------
-        rotation_symbols = self._position_manager.evaluate_rotations(ranked)
+        rotation_threshold = int(self._settings.ROTATION_RANK_DROP_THRESHOLD)
+        if regime.name == "trend":
+            rotation_threshold += int(self._settings.REGIME_TREND_ROTATION_BUFFER)
+        elif regime.name in {"mixed", "degraded"}:
+            rotation_threshold = max(
+                1,
+                rotation_threshold - int(self._settings.REGIME_MIXED_ROTATION_PENALTY),
+            )
+
+        rotation_symbols = self._position_manager.evaluate_rotations(
+            ranked, threshold_override=rotation_threshold
+        )
+        rotation_symbols = list(dict.fromkeys(
+            rotation_symbols + self._identify_stalled_positions(
+                ranked_universe=ranked,
+                open_positions=self._position_manager.get_open_positions(),
+                now_utc=now_utc,
+                rotation_threshold=rotation_threshold,
+            )
+        ))
         for symbol in rotation_symbols:
             position = self._position_manager.get_position(symbol)
             if position is None:
@@ -309,11 +359,18 @@ class PaperTradingLoop:
                 self._register_completed_trade(record)
             else:
                 logger.error("Rotation exit order failed for %s — position remains", symbol)
+        diagnostics["exits"]["rotations"] = len(rotation_symbols)
 
         # ------------------------------------------------------------------
         # Step 7 — Determine entry candidates
         # ------------------------------------------------------------------
-        open_symbols = {p.symbol for p in self._position_manager.get_open_positions()}
+        current_open_positions = self._position_manager.get_open_positions()
+        open_symbols = {p.symbol for p in current_open_positions}
+        symbol_stats = build_symbol_trade_stats(
+            self.get_completed_trades(),
+            now_utc=now_utc,
+            settings=self._settings,
+        )
 
         if ranked.scored_count < _MIN_SCORED_TO_TRADE:
             # A sparse ranking means min-max normalisation ran over too few
@@ -325,16 +382,20 @@ class PaperTradingLoop:
                 ranked.scored_count, _MIN_SCORED_TO_TRADE,
             )
             entry_candidates: list = []
+        elif not regime.allow_entries:
+            logger.info("Entries skipped — regime=%s", regime.name)
+            entry_candidates = []
         else:
             long_candidates = [
-                rs for rs in top_longs
+                rs for rs in all_longs
                 if rs.symbol not in open_symbols and rs.symbol in latest_bars
             ]
             short_candidates = [
-                rs for rs in top_shorts
+                rs for rs in all_shorts
                 if rs.symbol not in open_symbols and rs.symbol in latest_bars
             ]
-            entry_candidates = long_candidates + short_candidates
+            raw_candidates = long_candidates + short_candidates
+            entry_candidates = []
 
         if eod_done_today and entry_candidates:
             logger.info(
@@ -361,7 +422,7 @@ class PaperTradingLoop:
         # ------------------------------------------------------------------
         # Step 8 — Fetch historical bars for ATR, then enter candidates
         # ------------------------------------------------------------------
-        candidate_symbols = [rs.symbol for rs in entry_candidates]
+        candidate_symbols = [rs.symbol for rs in raw_candidates] if "raw_candidates" in locals() else []
         hist_bars: dict[str, list[dict]] = {}
 
         if candidate_symbols:
@@ -383,15 +444,45 @@ class PaperTradingLoop:
             except Exception as exc:
                 logger.error("Historical bars fetch for ATR failed: %s", exc)
 
+        if entry_candidates == [] and "raw_candidates" not in locals():
+            pass
+        elif eod_done_today:
+            entry_candidates = []
+        else:
+            entry_candidates = self._build_entry_candidates(
+                raw_candidates=raw_candidates,
+                latest_bars=latest_bars,
+                hist_bars=hist_bars,
+                symbol_stats=symbol_stats,
+                regime=regime,
+                now_utc=now_utc,
+                diagnostics=diagnostics,
+            )
+
         reserved_capital = 0.0  # capital committed by successful orders this cycle
 
         for rs in entry_candidates:
-            # Re-check capacity each iteration (previous iterations may have filled slots)
-            if len(self._position_manager.get_open_positions()) >= self._settings.MAX_OPEN_POSITIONS:
+            diagnostics["entries"]["attempted"] += 1
+            current_open = self._position_manager.get_open_positions()
+            if len(current_open) >= self._settings.MAX_OPEN_POSITIONS:
                 break
 
             symbol = rs.symbol
             direction = Direction.LONG if rs.direction == "long" else Direction.SHORT
+            side_open_positions = [
+                position for position in current_open if position.direction == direction
+            ]
+            side_limit = (
+                int(self._settings.LONG_MAX_OPEN_POSITIONS)
+                if direction == Direction.LONG
+                else int(self._settings.SHORT_MAX_OPEN_POSITIONS)
+            )
+            if len(side_open_positions) >= side_limit:
+                logger.debug(
+                    "Entry skipped — %s %s: side cap reached (%d/%d)",
+                    direction.value.upper(), symbol, len(side_open_positions), side_limit,
+                )
+                continue
 
             latest_bar = latest_bars.get(symbol)
             if latest_bar is None:
@@ -446,7 +537,6 @@ class PaperTradingLoop:
                 )
                 continue
 
-            current_open = self._position_manager.get_open_positions()
             valid, reason = validate_entry(
                 symbol=symbol,
                 direction=direction,
@@ -458,6 +548,11 @@ class PaperTradingLoop:
                 daily_pnl=self._get_daily_pnl(),
                 equity=current_equity,
                 settings=self._settings,
+                side_open_positions=side_open_positions,
+                max_positions_for_side=side_limit,
+                sector=self._get_symbol_sector(symbol),
+                sector_by_symbol=self._build_sector_map(current_open),
+                sector_limit=int(self._settings.SECTOR_CONCENTRATION_LIMIT),
             )
 
             if not valid:
@@ -491,6 +586,7 @@ class PaperTradingLoop:
                 position.features = rs.features
                 self._position_manager.add_position(position)
                 reserved_capital += size * entry_price  # track committed capital this cycle
+                diagnostics["entries"]["filled"] += 1
 
         # ------------------------------------------------------------------
         # Step 9 — Update LoopState from live account
@@ -503,11 +599,24 @@ class PaperTradingLoop:
             logger.error("get_account() failed for state update: %s", exc)
             # Retain previous values
 
+        try:
+            broker_positions = self._alpaca.get_positions()
+            local_symbols = sorted(p.symbol for p in self._position_manager.get_open_positions())
+            broker_symbols = sorted(str(p.get("symbol")) for p in broker_positions)
+            diagnostics["broker_state"] = {
+                "local_open_symbols": local_symbols,
+                "broker_open_symbols": broker_symbols,
+                "mismatch": local_symbols != broker_symbols,
+            }
+        except Exception as exc:
+            diagnostics["broker_state"] = {"error": str(exc)}
+
         with self._state_lock:
             self._cycle_count += 1
             open_count = len(self._position_manager.get_open_positions())
             with self._trades_lock:
                 trades_completed = len(self._completed_trades)
+            self._last_cycle_diagnostics = diagnostics
             self._state = LoopState(
                 is_running=self._state.is_running,
                 last_cycle_time=now_utc,
@@ -526,9 +635,10 @@ class PaperTradingLoop:
         # ------------------------------------------------------------------
         state = self.get_state()
         logger.info(
-            "Cycle #%d | %s | open=%d trades=%d daily_pnl=%.2f total_pnl=%.2f equity=%.2f",
+            "Cycle #%d | %s | regime=%s | open=%d trades=%d daily_pnl=%.2f total_pnl=%.2f equity=%.2f",
             state.cycle_count,
             now_utc.strftime("%H:%M:%S UTC"),
+            regime.name,
             state.open_position_count,
             state.total_trades_completed,
             state.daily_pnl,
@@ -556,6 +666,115 @@ class PaperTradingLoop:
         """Add a completed TradeRecord to the session list."""
         with self._trades_lock:
             self._completed_trades.append(record)
+
+    def _build_entry_candidates(
+        self,
+        raw_candidates,
+        latest_bars: dict[str, dict],
+        hist_bars: dict[str, list[dict]],
+        symbol_stats: dict[str, dict],
+        regime,
+        now_utc: datetime,
+        diagnostics: dict[str, Any],
+    ) -> list:
+        per_side_limit = max(int(self._settings.MAX_CANDIDATES_PER_SIDE), 1)
+        qualified: dict[str, list] = {"long": [], "short": []}
+
+        for rs in raw_candidates:
+            direction = Direction.LONG if rs.direction == "long" else Direction.SHORT
+            latest_bar = latest_bars.get(rs.symbol)
+            if latest_bar is None:
+                self._increment_rejection(diagnostics, "missing latest bar")
+                continue
+            entry_price = float(latest_bar["close"])
+            atr = _compute_atr(hist_bars.get(rs.symbol, []))
+            result = qualify_ranked_symbol(
+                ranked_symbol=rs,
+                direction=direction,
+                entry_price=entry_price,
+                atr=atr,
+                now_utc=now_utc,
+                symbol_stats=symbol_stats.get(rs.symbol),
+                regime=regime,
+                settings=self._settings,
+            )
+            if not result.allowed:
+                self._increment_rejection(diagnostics, result.reason)
+                continue
+            qualified[rs.direction].append(rs)
+            diagnostics["qualification"]["passed"][rs.direction] += 1
+
+        mixed_bonus = (
+            float(self._settings.REGIME_MIXED_SCORE_BONUS)
+            if regime.name == "mixed" else 0.0
+        )
+        if mixed_bonus > 0:
+            qualified["long"] = [
+                rs for rs in qualified["long"]
+                if float(rs.features.normalized_score) >= float(self._settings.LONG_ENTRY_SCORE_THRESHOLD) + mixed_bonus
+            ]
+            qualified["short"] = [
+                rs for rs in qualified["short"]
+                if (100.0 - float(rs.features.normalized_score)) >= float(self._settings.SHORT_ENTRY_SCORE_THRESHOLD) + mixed_bonus
+            ]
+
+        qualified["long"].sort(key=lambda rs: float(rs.score), reverse=True)
+        qualified["short"].sort(key=lambda rs: float(rs.score))
+
+        scaled_side_limit = max(int(round(per_side_limit * regime.position_scale)), 1)
+        return qualified["long"][:scaled_side_limit] + qualified["short"][:scaled_side_limit]
+
+    def _increment_rejection(self, diagnostics: dict[str, Any], reason: str) -> None:
+        rejected = diagnostics["qualification"]["rejected"]
+        rejected[reason] = rejected.get(reason, 0) + 1
+
+    def _get_symbol_sector(self, symbol: str) -> Optional[str]:
+        if self._universe is None:
+            return None
+        return self._universe.get_sector_for_symbol(symbol)
+
+    def _build_sector_map(self, positions) -> dict[str, str]:
+        sector_map: dict[str, str] = {}
+        for position in positions:
+            sector = self._get_symbol_sector(position.symbol)
+            if sector:
+                sector_map[position.symbol] = sector
+        return sector_map
+
+    def _identify_stalled_positions(
+        self,
+        ranked_universe,
+        open_positions,
+        now_utc: datetime,
+        rotation_threshold: int,
+    ) -> list[str]:
+        long_ranks = {rs.symbol: rs.rank for rs in ranked_universe.longs}
+        short_ranks = {rs.symbol: rs.rank for rs in ranked_universe.shorts}
+        stalled: list[str] = []
+        min_hold_minutes = int(self._settings.STALLED_TRADE_MINUTES)
+        progress_floor = float(self._settings.STALLED_TRADE_PROGRESS_FLOOR)
+        rank_buffer = int(self._settings.STALLED_TRADE_RANK_BUFFER)
+
+        for position in open_positions:
+            hold_minutes = (now_utc - position.entry_time).total_seconds() / 60.0
+            if hold_minutes < min_hold_minutes:
+                continue
+            reward_capacity = abs(position.reward_per_share()) * max(position.size, 1)
+            progress = (
+                position.unrealized_pnl / reward_capacity
+                if reward_capacity > 0 else 0.0
+            )
+            rank_now = (
+                long_ranks.get(position.symbol)
+                if position.direction == Direction.LONG
+                else short_ranks.get(position.symbol)
+            )
+            if progress >= progress_floor:
+                continue
+            if rank_now is None or rank_now > max(1, rotation_threshold - rank_buffer):
+                stalled.append(position.symbol)
+
+        return stalled
 
     def _get_daily_pnl(self) -> float:
         """Sum realized_pnl for all trades closed today (ET date)."""

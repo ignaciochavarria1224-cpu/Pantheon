@@ -131,6 +131,14 @@ class UniverseManager:
         """Return all sector names available in the default universe."""
         return list(_UNIVERSE_BY_SECTOR.keys())
 
+    def get_sector_for_symbol(self, symbol: str) -> Optional[str]:
+        """Return the sector name for a symbol, or None if not mapped."""
+        symbol_upper = symbol.upper()
+        for sector, symbols in _UNIVERSE_BY_SECTOR.items():
+            if symbol_upper in symbols:
+                return sector
+        return None
+
     def contains(self, symbol: str) -> bool:
         """Return True if symbol is in the universe."""
         return symbol.upper() in self._symbols

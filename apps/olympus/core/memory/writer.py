@@ -316,6 +316,29 @@ class MemoryAwarePaperTradingLoop(PaperTradingLoop):
         """Add to session list (parent), then persist to DB (ours)."""
         super()._register_completed_trade(record)
         self._memory_writer.write_trade(record, features=record.features)
+        if record.features is None:
+            self._memory_writer.write_event(
+                "data_quality",
+                f"Trade {record.trade_id[:8]} closed without feature snapshot",
+                symbol=record.symbol,
+                metadata={
+                    "trade_id": record.trade_id,
+                    "issue": "missing_trade_features",
+                    "exit_reason": record.exit_reason,
+                },
+            )
+        if record.entry_time.date() != record.exit_time.date():
+            self._memory_writer.write_event(
+                "data_quality",
+                f"Trade {record.trade_id[:8]} crossed sessions",
+                symbol=record.symbol,
+                metadata={
+                    "trade_id": record.trade_id,
+                    "issue": "overnight_hold",
+                    "entry_time": record.entry_time.isoformat(),
+                    "exit_time": record.exit_time.isoformat(),
+                },
+            )
 
     def _run_cycle(self) -> None:
         """Run the full cycle (parent), then persist the ranking cycle to DB."""
@@ -325,3 +348,24 @@ class MemoryAwarePaperTradingLoop(PaperTradingLoop):
         ranked = self._ranking_cycle.get_latest()
         if ranked is not None:
             self._memory_writer.write_cycle(ranked)
+            diagnostics = self.get_last_cycle_diagnostics()
+            if diagnostics:
+                self._memory_writer.write_event(
+                    "cycle_diagnostics",
+                    f"Cycle {ranked.cycle_id[:8]} {diagnostics.get('regime', {}).get('name', 'unknown')}",
+                    metadata={
+                        "cycle_id": ranked.cycle_id,
+                        "regime": diagnostics.get("regime"),
+                        "qualification": diagnostics.get("qualification"),
+                        "entries": diagnostics.get("entries"),
+                        "exits": diagnostics.get("exits"),
+                        "broker_state": diagnostics.get("broker_state"),
+                    },
+                )
+                broker_state = diagnostics.get("broker_state") or {}
+                if broker_state.get("mismatch"):
+                    self._memory_writer.write_event(
+                        "broker_mismatch",
+                        "Local and broker open positions diverged",
+                        metadata=broker_state,
+                    )
