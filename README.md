@@ -39,7 +39,7 @@ Excluded from version control:
 ## Current Architecture
 
 - `Apollo` is the user-facing app, voice, and chat surface.
-- `Pantheon` currently lives inside `apps/apollo/pantheon` as the new hidden reasoning layer behind Apollo.
+- `Pantheon` currently lives inside `apps/apollo/pantheon` as the hidden reasoning layer and internal operations shell behind Apollo.
 - `BlackBook` and `Maridian` remain separate subsystems that Pantheon reads from and coordinates.
 - `Olympus` is the trading execution source of truth, including market data fetch, ranking cycles, paper-trading logic, and persistent trade memory.
 

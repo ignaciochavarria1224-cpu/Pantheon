@@ -70,35 +70,13 @@ class DashboardState(rx.State):
             self.loading = False
 
     def _compute_balances(self, txns: list[dict]) -> None:
-        balances: dict[int, float] = {}
-        for acct in self.accounts:
-            aid = int(acct["id"])
-            sb = float(acct.get("starting_balance") or 0)
-            override = acct.get("current_balance_override")
-            balances[aid] = float(override) if override is not None else sb
-
-        for tx in txns:
-            aid = int(tx.get("account_id") or 0)
-            taid = tx.get("to_account_id")
-            amt = float(tx.get("amount") or 0)
-            tx_type = str(tx.get("type") or "")
-            if tx_type == "income":
-                balances[aid] = balances.get(aid, 0) + amt
-            elif tx_type == "expense":
-                balances[aid] = balances.get(aid, 0) - amt
-            elif tx_type == "transfer" and taid:
-                taid = int(taid)
-                balances[aid] = balances.get(aid, 0) - amt
-                balances[taid] = balances.get(taid, 0) + amt
-
         assets = 0.0
         debt = 0.0
         acct_balances: list[AccountBalance] = []
 
-        for acct in self.accounts:
-            aid = int(acct["id"])
-            bal = balances.get(aid, 0.0)
-            is_debt = bool(int(acct.get("is_debt") or 0))
+        for acct in queries.calculate_account_balances(self.accounts, txns):
+            bal = float(acct.get("balance") or 0.0)
+            is_debt = bool(acct.get("is_debt"))
 
             if is_debt:
                 debt += abs(bal)
@@ -110,7 +88,7 @@ class DashboardState(rx.State):
                 display = f"${bal:,.2f}"
 
             acct_balances.append(AccountBalance(
-                id=aid,
+                id=int(acct["id"]),
                 name=str(acct.get("name") or ""),
                 account_type=str(acct.get("account_type") or ""),
                 is_debt=is_debt,

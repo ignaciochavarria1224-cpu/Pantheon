@@ -72,6 +72,8 @@ This file is the data contract between BlackBook and its underlying Neon/Postgre
 
 This makes `queries.py` one of the most strategically important files in the whole stack, because it encodes the shape of the structured facts Pantheon and Apollo will later rely on.
 
+It is also now the shared truth path for Apollo/Pantheon financial reads. The current migration direction is to move financial surfaces into the Pantheon shell without duplicating BlackBook logic.
+
 ### `assets/`
 Shared visual identity and styling, including the main BlackBook stylesheet.
 
@@ -91,6 +93,12 @@ Pantheon and Apollo depend on it for things like:
 
 It also already acts as a meeting point with Maridian, since BlackBook stores journal entries and reads Maridian outputs and question sets.
 
+The current implementation direction is hybrid:
+
+- BlackBook still owns the financial domain and its standalone app
+- Apollo/Pantheon can now render important BlackBook surfaces from shared data-access logic
+- deeper admin workflows such as settings and reconciliation can remain in the standalone app until the Pantheon shell catches up
+
 ## What BlackBook Already Does Well
 
 BlackBook already has a broad footprint:
@@ -104,6 +112,8 @@ BlackBook already has a broad footprint:
 - acts as the financial fact layer the broader system can trust
 
 This is why BlackBook should not be absorbed into Apollo or Pantheon. Its job is not to be the intelligence layer. Its job is to own the facts cleanly and reliably.
+
+What *is* being absorbed is the everyday surface area. Pantheon can present BlackBook through its own tabs, but it should still do so by calling BlackBook's underlying truth path rather than rebuilding financial facts in a second connector layer.
 
 ## What BlackBook Is Not
 
@@ -147,6 +157,11 @@ In the broader architecture:
 
 Pantheon should query BlackBook whenever it needs financial truth. It should not attempt to recreate or mirror BlackBook’s structured logic in prompts.
 
+Balance semantics are now explicit:
+
+- if `current_balance_override` is set, it is treated as the final current balance
+- if no override is set, balance is calculated as `starting_balance + ledger transactions`
+
 This boundary is important:
 
 - BlackBook answers "what happened financially?"
@@ -175,4 +190,3 @@ Whenever BlackBook changes in any material way, this file should be updated in t
 - data ownership boundaries
 
 If this document and the code disagree, the code wins until this file is corrected.
-

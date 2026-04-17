@@ -3,14 +3,19 @@ from core.memory import (
     get_approval_rule,
     get_decisions,
     get_recent_conversations,
+    get_recent_traces,
     log_decision,
     set_approval_rule,
 )
+from pantheon.services import blackbook, maridian, olympus
 
 
 class PantheonConnectors:
     def recent_memory(self, limit: int = 8) -> list[dict]:
         return get_recent_conversations(limit=limit)
+
+    def recent_traces(self, limit: int = 12) -> list[dict]:
+        return get_recent_traces(limit=limit)
 
     def decisions(self, limit: int = 8) -> list[dict]:
         return get_decisions(limit=limit)
@@ -19,19 +24,102 @@ class PantheonConnectors:
         return get_active_patterns()
 
     def spending_summary(self, period: str) -> dict:
-        from connectors.black_book import get_spending_summary
-
-        return get_spending_summary(period)
+        snapshot = blackbook.get_snapshot()
+        data = snapshot.get("spending_month", []) if period == "month" else blackbook.get_spending_summary(period)
+        return {
+            "success": bool(data),
+            "data": data,
+            "stale": snapshot.get("stale", False),
+            "error": snapshot.get("error", ""),
+            "source": snapshot.get("source", "live"),
+        }
 
     def account_balances(self) -> dict:
-        from connectors.black_book import get_account_balances
+        snapshot = blackbook.get_snapshot()
+        data = snapshot.get("balances", [])
+        return {
+            "success": bool(data),
+            "data": data,
+            "stale": snapshot.get("stale", False),
+            "error": snapshot.get("error", ""),
+            "source": snapshot.get("source", "live"),
+        }
 
-        return get_account_balances()
+    def recent_transactions(self, limit: int = 12) -> dict:
+        snapshot = blackbook.get_snapshot()
+        data = snapshot.get("recent_transactions", [])[:limit]
+        return {
+            "success": bool(data),
+            "data": data,
+            "stale": snapshot.get("stale", False),
+            "error": snapshot.get("error", ""),
+            "source": snapshot.get("source", "live"),
+        }
+
+    def blackbook_snapshot(self) -> dict:
+        return blackbook.get_snapshot()
+
+    def olympus_snapshot(self) -> dict:
+        return olympus.get_snapshot()
 
     def olympus_status(self) -> dict:
-        from connectors.olympus import get_pnl_summary
+        snapshot = olympus.get_snapshot()
+        if not snapshot.get("connected"):
+            return {"success": False, "error": "Olympus database/report artifacts are unavailable."}
 
-        return get_pnl_summary()
+        performance = snapshot.get("performance") or {}
+        cycle = snapshot.get("latest_cycle") or {}
+        summary = {
+            "daily_pnl": performance.get("avg_pnl", 0),
+            "total_pnl": performance.get("total_pnl", 0),
+            "open_positions": [],
+            "position_count": 0,
+            "alerts": [event.get("description") for event in snapshot.get("recent_events", [])[:3]],
+            "last_updated": cycle.get("cycle_timestamp") or snapshot.get("report_updated_at"),
+            "is_stale": not bool(snapshot.get("db_updated_at")),
+            "total_trades": performance.get("total_trades", 0),
+        }
+        return {"success": True, "summary": summary, "snapshot": snapshot}
+
+    def doctor(self, provider_diagnostics: dict) -> dict:
+        blackbook_snapshot = blackbook.get_snapshot()
+        maridian_snapshot = maridian.get_snapshot()
+        olympus_snapshot = olympus.get_snapshot()
+        return {
+            "current_provider": provider_diagnostics.get("current_provider", "none"),
+            "preferred_provider": provider_diagnostics.get("preferred_provider", "anthropic"),
+            "providers": {
+                "anthropic": provider_diagnostics.get("anthropic", {}),
+                "ollama": provider_diagnostics.get("ollama", {}),
+            },
+            "subsystems": {
+                "blackbook": {
+                    "connected": blackbook_snapshot.get("connected", False),
+                    "stale": blackbook_snapshot.get("stale", False),
+                    "source": blackbook_snapshot.get("source", "unknown"),
+                    "last_success_at": blackbook_snapshot.get("fetched_at"),
+                    "reason": blackbook_snapshot.get("error", ""),
+                },
+                "maridian": {
+                    "connected": maridian_snapshot.get("connected", False),
+                    "stale": False,
+                    "source": "filesystem",
+                    "last_success_at": maridian_snapshot.get("fetched_at"),
+                    "reason": maridian_snapshot.get("error", ""),
+                },
+                "olympus": {
+                    "connected": olympus_snapshot.get("connected", False),
+                    "stale": False,
+                    "source": olympus_snapshot.get("source", "unknown"),
+                    "last_success_at": olympus_snapshot.get("fetched_at") or olympus_snapshot.get("db_updated_at"),
+                    "reason": olympus_snapshot.get("error", ""),
+                },
+            },
+            "recent_traces": self.recent_traces(limit=8),
+        }
+
+    def maridian_snapshot(self) -> dict:
+        return maridian.get_snapshot()
 
     def search_meridian(self, query: str, n_results: int = 5) -> list[dict]:
         from search.retriever import search_meridian
@@ -54,22 +142,16 @@ class PantheonConnectors:
         return queue_meridian_prompt(prompt)
 
     def run_meridian_cycle(self) -> dict:
-        from connectors.meridian import trigger_meridian_cycle
-
-        return trigger_meridian_cycle()
+        return maridian.run_cycle()
 
     def record_decision(self, decision: str, reasoning: str | None, domain: str | None) -> None:
         log_decision(decision=decision, reasoning=reasoning, domain=domain or "general")
 
     def record_expense(self, amount: float, description: str, category: str, account: str, date_str: str | None) -> dict:
-        from connectors.black_book import add_expense
-
-        return add_expense(amount, description, category, account, date_str)
+        return blackbook.add_expense(amount, description, category, account, date_str)
 
     def record_income(self, amount: float, description: str, account: str, date_str: str | None) -> dict:
-        from connectors.black_book import add_income
-
-        return add_income(amount, description, account, date_str)
+        return blackbook.add_income(amount, description, account, date_str)
 
     def approval_rule(self, action_type: str) -> dict | None:
         return get_approval_rule(action_type)

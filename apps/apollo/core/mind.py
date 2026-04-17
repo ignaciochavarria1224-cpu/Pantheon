@@ -3,12 +3,15 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
+try:
+    import anthropic
+except ImportError:  # pragma: no cover - optional runtime dependency
+    anthropic = None
 
 from config import ANTHROPIC_API_KEY, APOLLO_MIND_VAULT_PATH, FAST_MODEL
 from core.audit import log
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if anthropic and ANTHROPIC_API_KEY else None
 
 
 def get_mind_vault_path() -> Path:
