@@ -8,9 +8,8 @@ from pantheon.models import PantheonResult
 from pantheon.runtime import LocalModelRuntime
 
 SYSTEM_PROMPT = """You are Pantheon, the operating system behind Apollo.
-Use available system context to answer clearly and concretely.
-If a requested system is unavailable, say so plainly.
-Never pretend an action succeeded if it did not."""
+Use the structured subsystem context to answer clearly and concretely.
+Do not invent data. If a subsystem is unavailable, say so plainly."""
 
 
 class PantheonReasoner:
@@ -30,23 +29,33 @@ class PantheonReasoner:
             return PantheonResult(response="Apollo is ready.", audit_id=audit_id)
 
         lower = normalized.lower()
-        log(f"Reasoning request [{channel}]", detail=normalized[:120], system="PANTHEON")
-
         approval_scope = self._approval_phrase(lower)
         explicit_write = self._is_write_request(lower)
+        log(f"Reasoning request [{channel}]", detail=normalized[:120], system="PANTHEON")
 
-        if "olympus" in lower or "apex" in lower:
-            tools_used.append("get_olympus_status")
+        if any(token in lower for token in ("olympus", "apex", "trade", "pnl", "ranking cycle")):
+            tools_used.append("olympus_snapshot")
             result = self.connectors.olympus_status()
             if result.get("success"):
-                summary = result["summary"]
-                sources.append({"system": "olympus", "type": "status", "last_updated": summary.get("last_updated")})
-                stale = " Data may be stale." if summary.get("is_stale") else ""
-                positions = ", ".join([p.get("symbol", "?") for p in summary.get("open_positions", [])]) or "None"
+                snapshot = result.get("snapshot") or {}
+                perf = snapshot.get("performance") or {}
+                cycle = snapshot.get("latest_cycle") or {}
+                trades = snapshot.get("recent_trades") or []
+                sources.append({"system": "olympus", "type": "sqlite", "path": snapshot.get("db_path")})
+                if snapshot.get("report_updated_at"):
+                    sources.append({"system": "olympus", "type": "report", "updated_at": snapshot.get("report_updated_at")})
+                latest_trade = ""
+                if trades:
+                    top = trades[0]
+                    latest_trade = (
+                        f" Most recent trade: {top.get('symbol')} {top.get('direction')} "
+                        f"{top.get('realized_pnl')} on {top.get('exit_time')}."
+                    )
                 response = (
-                    f"Olympus reports daily PnL {summary.get('daily_pnl')}, total PnL {summary.get('total_pnl')}, "
-                    f"{summary.get('position_count')} open positions ({positions}), alerts: "
-                    f"{'; '.join(summary.get('alerts', [])) or 'none'}.{stale}"
+                    f"Olympus shows {perf.get('total_trades', 0)} recorded trades, total PnL "
+                    f"{perf.get('total_pnl', 0)}, average R {perf.get('avg_r_multiple', 0)}, and the latest ranking cycle at "
+                    f"{cycle.get('cycle_timestamp', 'unknown time')} with {cycle.get('scored_count', 0)} scored names."
+                    f"{latest_trade}"
                 )
                 return PantheonResult(response=response, tools_used=tools_used, sources=sources, audit_id=audit_id)
             return PantheonResult(
@@ -55,47 +64,58 @@ class PantheonReasoner:
                 audit_id=audit_id,
             )
 
-        if "spending" in lower or "spent this" in lower:
+        if any(token in lower for token in ("spending", "spent this", "expenses")):
             period = "month"
             if "week" in lower:
                 period = "week"
             elif "year" in lower:
                 period = "year"
-            tools_used.append("get_spending_summary")
+            tools_used.append("blackbook_spending_summary")
             result = self.connectors.spending_summary(period)
-            if result.get("success"):
-                data = result.get("data", [])
-                sources.append({"system": "black_book", "type": "spending_summary", "period": period})
-                if not data:
-                    return PantheonResult(
-                        response=f"I checked Black Book and there are no {period} expenses recorded yet.",
-                        tools_used=tools_used,
-                        sources=sources,
-                        audit_id=audit_id,
-                    )
-                summary = ", ".join([f"{row['category']}: ${row['total']}" for row in data[:5]])
+            data = result.get("data", []) if result.get("success") else []
+            sources.append({"system": "blackbook", "type": "spending_summary", "period": period})
+            if not data:
                 return PantheonResult(
-                    response=f"Your {period} spending summary from Black Book is {summary}.",
+                    response=f"I checked BlackBook and there are no {period} expenses recorded yet.",
                     tools_used=tools_used,
                     sources=sources,
                     audit_id=audit_id,
                 )
+            summary = ", ".join(f"{row['category']}: ${row['total']}" for row in data[:5])
+            return PantheonResult(
+                response=f"Your {period} spending summary from BlackBook is {summary}.",
+                tools_used=tools_used,
+                sources=sources,
+                audit_id=audit_id,
+            )
 
-        if "balance" in lower or "account" in lower and "what" in lower:
-            tools_used.append("get_account_balances")
+        if "balance" in lower or ("account" in lower and "what" in lower):
+            tools_used.append("blackbook_account_balances")
             result = self.connectors.account_balances()
-            if result.get("success"):
-                data = result.get("data", [])
-                sources.append({"system": "black_book", "type": "account_balances"})
-                summary = ", ".join([f"{row['name']}: ${row['balance']}" for row in data])
+            data = result.get("data", []) if result.get("success") else []
+            sources.append({"system": "blackbook", "type": "account_balances"})
+            if not data:
                 return PantheonResult(
-                    response=f"Current Black Book balances are {summary}.",
+                    response="BlackBook is connected, but I couldn't read any account balances right now.",
                     tools_used=tools_used,
                     sources=sources,
                     audit_id=audit_id,
                 )
 
-        if "run my journal cycle" in lower or "run meridian" in lower or "run maridian" in lower:
+            match = self._match_account(lower, data)
+            if match:
+                response = f"Your current {match['name']} balance in BlackBook is ${float(match['balance']):,.2f}."
+            else:
+                summary = ", ".join(f"{row['name']}: ${float(row['balance']):,.2f}" for row in data)
+                response = f"Current BlackBook balances are {summary}."
+            return PantheonResult(
+                response=response,
+                tools_used=tools_used,
+                sources=sources,
+                audit_id=audit_id,
+            )
+
+        if any(token in lower for token in ("run my journal cycle", "run meridian", "run maridian")):
             if not self._write_allowed("trigger_meridian_cycle", approval_scope):
                 actions_proposed.append("trigger_meridian_cycle")
                 return PantheonResult(
@@ -114,11 +134,22 @@ class PantheonReasoner:
                     audit_id=audit_id,
                 )
             return PantheonResult(
-                response=f"I tried to run the Maridian cycle, but it failed: {result.get('error', 'unknown error')}",
+                response=f"I tried to run the Maridian cycle, but it failed: {result.get('error') or result.get('stderr') or 'unknown error'}",
                 tools_used=tools_used,
                 actions_taken=actions_taken,
                 audit_id=audit_id,
             )
+
+        if any(token in lower for token in ("maridian", "meridian questions", "today's questions", "journal cycle status")):
+            tools_used.append("maridian_snapshot")
+            snapshot = self.connectors.maridian_snapshot()
+            sources.append({"system": "maridian", "type": "state", "last_cycle": snapshot.get("last_cycle")})
+            question_count = len(snapshot.get("today_questions", []))
+            response = (
+                f"Maridian is {'locked' if snapshot.get('locked') else 'idle'}, on cycle {snapshot.get('cycle_count', 0)}, "
+                f"with {question_count} questions generated for today. Last cycle: {snapshot.get('last_cycle') or 'not recorded'}."
+            )
+            return PantheonResult(response=response, tools_used=tools_used, sources=sources, audit_id=audit_id)
 
         journal_content = self._extract_after_prefix(normalized, ["journal:", "log this:", "note:"])
         if journal_content:
@@ -191,7 +222,7 @@ class PantheonReasoner:
                 audit_id=audit_id,
             )
 
-        if "search maridian" in lower or "what did i journal" in lower or "search meridian" in lower:
+        if any(token in lower for token in ("search maridian", "search meridian", "what did i journal")):
             query = normalized.split("?", 1)[0]
             for prefix in ("search maridian", "search meridian", "what did i journal about"):
                 if query.lower().startswith(prefix):
@@ -201,9 +232,7 @@ class PantheonReasoner:
             tools_used.append("search_meridian")
             results = self.connectors.search_meridian(query, n_results=3)
             if results:
-                sources.extend(
-                    [{"system": "maridian", "type": "search_hit", "path": item.get("path")} for item in results]
-                )
+                sources.extend({"system": "maridian", "type": "search_hit", "path": item.get("path")} for item in results)
                 preview = " ".join(
                     f"{item['source']}: {item['content'][:140].strip()}..." for item in results[:3]
                 )
@@ -220,9 +249,7 @@ class PantheonReasoner:
             )
 
         context = self._build_context(normalized, conversation_history or [], explicit_write)
-        generated = None
-        if self.runtime.available():
-            generated = self.runtime.generate(SYSTEM_PROMPT, context)
+        generated = self.runtime.generate(SYSTEM_PROMPT, context) if self.runtime.available() else None
         if generated:
             return PantheonResult(
                 response=generated,
@@ -233,9 +260,8 @@ class PantheonReasoner:
                 audit_id=audit_id,
             )
 
-        fallback = self._fallback_response(normalized)
         return PantheonResult(
-            response=fallback,
+            response=self._fallback_response(normalized),
             sources=sources,
             tools_used=tools_used,
             actions_taken=actions_taken,
@@ -250,6 +276,9 @@ class PantheonReasoner:
             "recent_memory": self.connectors.recent_memory(limit=4),
             "recent_decisions": self.connectors.decisions(limit=3),
             "active_patterns": self.connectors.patterns()[:3],
+            "blackbook": self.connectors.blackbook_snapshot(),
+            "maridian": self.connectors.maridian_snapshot(),
+            "olympus": self.connectors.olympus_snapshot(),
             "write_request": explicit_write,
         }
         return json.dumps(payload, ensure_ascii=True, default=str)
@@ -257,7 +286,7 @@ class PantheonReasoner:
     def _fallback_response(self, message: str) -> str:
         return (
             "Pantheon is connected, but the local model is unavailable right now. "
-            f"I received: '{message}'. Once Ollama is running, Apollo will answer through Pantheon."
+            f"I received: '{message}'. The subsystem dashboards and factual reads are still live."
         )
 
     def _approval_phrase(self, lower: str) -> str | None:
@@ -292,7 +321,7 @@ class PantheonReasoner:
             return None
         amount_match = re.search(r"\$?(\d+(?:\.\d{1,2})?)", message)
         account_match = re.search(r"from ([a-zA-Z ]+)", lower)
-        category_match = re.search(r"\b(food|health|transport|entertainment|shopping|bills|other)\b", lower)
+        category_match = re.search(r"\b(food|health|transport|entertainment|shopping|bills|other|gas)\b", lower)
         if not amount_match or not account_match:
             return None
         amount = float(amount_match.group(1))
@@ -321,3 +350,15 @@ class PantheonReasoner:
                 reasoning = text[idx + len(delimiter):].strip(" .")
                 return decision, reasoning
         return text.strip(" ."), None
+
+    def _match_account(self, lower: str, balances: list[dict]) -> dict | None:
+        for item in balances:
+            name = str(item.get("name") or "")
+            compact = name.lower().replace(" ", "")
+            if name.lower() in lower or compact in lower.replace(" ", ""):
+                return item
+        if "checking" in lower:
+            return next((item for item in balances if "checking" in str(item.get("name", "")).lower()), None)
+        if "savings" in lower:
+            return next((item for item in balances if "savings" in str(item.get("name", "")).lower()), None)
+        return None

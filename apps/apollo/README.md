@@ -11,7 +11,7 @@ Apollo exists to give Pantheon a presence.
 Today that presence is primarily:
 
 - a FastAPI backend for chat, voice, briefs, triggers, memory inspection, and agent endpoints
-- a Reflex-based web UI
+- a Reflex-based web UI with Apollo as the main conversational surface and Pantheon as the internal operations shell
 - a WhatsApp bridge
 - a voice transcription entrypoint
 
@@ -69,6 +69,8 @@ This package now contains:
 
 This folder matters because it represents the transition from "Apollo as the full brain" to "Apollo as the shell over Pantheon."
 
+Pantheon now also exposes structured subsystem endpoints for the Apollo UI so the visible product can render live BlackBook, Maridian, and Olympus state instead of a static preview shell.
+
 ### `connectors/`
 Direct integration code for:
 
@@ -113,7 +115,12 @@ Right now the meaningful channel code is:
 ### `ui/`
 Apollo's current Reflex UI.
 
-This is still relatively simple. It is a chat surface over the backend. The next design step should be making this feel more intentional as the visible face of Apollo while Pantheon remains the hidden system behind it.
+This is now a two-layer shell:
+
+- `Apollo` remains the main conversational tab
+- `Pantheon` is the internal operations shell with subsystem tabs for BlackBook, Maridian, Olympus, and activity
+
+The intention is one primary app, not a set of disconnected daily apps.
 
 ## Current State Of Apollo
 
@@ -128,12 +135,12 @@ It already has:
 - a daily brief mechanism
 - triggers
 - a WhatsApp bridge
-- a basic UI
-- the first Pantheon integration layer
+- a unified Apollo/Pantheon UI shell
+- the first Pantheon operations endpoints
+- shared BlackBook-backed financial truth for balances and transaction-aware answers
 
 It does not yet have:
 
-- a fully mature Pantheon-native UI
 - a completed local-first reasoning stack across all features
 - a final digital twin layer
 - a fully realized autonomous staff/agent model
@@ -167,6 +174,7 @@ Apollo owns:
 - user session entrypoints
 - voice/chat ingress
 - user-facing response behavior
+- the visible Apollo tab and the Pantheon shell that lives inside it
 
 Apollo should not ultimately own:
 
@@ -188,7 +196,7 @@ In the Pantheon architecture:
 - Maridian is the reflective/cognitive source of truth
 - Olympus is the execution/trading source of truth
 
-That means Apollo should stay understandable and user-centered, while Pantheon becomes increasingly invisible and powerful behind it.
+That means Apollo should stay understandable and user-centered, while Pantheon becomes increasingly powerful behind it and surfaces subsystem operations through one coherent app shell.
 
 ## Documentation Contract
 
@@ -204,4 +212,3 @@ Whenever Apollo changes in any material way, this file should be updated in the 
 - Pantheon integration behavior
 
 If code and documentation ever disagree, the code is the source of truth until this document is corrected.
-

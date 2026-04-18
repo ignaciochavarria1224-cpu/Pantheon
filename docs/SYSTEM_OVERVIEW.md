@@ -11,7 +11,7 @@
 ## Current Repo Mapping
 
 - `apps/apollo`
-  Contains the existing Apollo backend, UI, connectors, and the new `pantheon/` package that now routes reasoning behind Apollo.
+  Contains the existing Apollo backend, UI, connectors, and the `pantheon/` package that now routes reasoning behind Apollo and powers the internal operations shell.
 - `apps/blackbook`
   Contains the BlackBook Reflex app and database/query logic.
 - `apps/maridian`
@@ -24,7 +24,8 @@
 The immediate direction is:
 
 1. keep Apollo as the visible product
-2. continue moving intelligence responsibilities into Pantheon
-3. run the local model stack on the PC
-4. use Olympus as the trading execution layer while Apollo and Pantheon consume its outputs
+2. keep Apollo as the main conversational tab while Pantheon becomes the internal shell for BlackBook, Maridian, Olympus, and activity
+3. continue moving intelligence responsibilities into Pantheon
+4. run the local model stack on the PC
+5. use subsystem-owned truth paths so Apollo answers from the same facts those systems use themselves
 

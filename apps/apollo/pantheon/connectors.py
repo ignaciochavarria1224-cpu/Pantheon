@@ -6,6 +6,7 @@ from core.memory import (
     log_decision,
     set_approval_rule,
 )
+from pantheon.services import blackbook, maridian, olympus
 
 
 class PantheonConnectors:
@@ -19,19 +20,41 @@ class PantheonConnectors:
         return get_active_patterns()
 
     def spending_summary(self, period: str) -> dict:
-        from connectors.black_book import get_spending_summary
-
-        return get_spending_summary(period)
+        return {"success": True, "data": blackbook.get_spending_summary(period)}
 
     def account_balances(self) -> dict:
-        from connectors.black_book import get_account_balances
+        return {"success": True, "data": blackbook.get_account_balances()}
 
-        return get_account_balances()
+    def recent_transactions(self, limit: int = 12) -> dict:
+        return {"success": True, "data": blackbook.get_recent_transactions(limit=limit)}
+
+    def blackbook_snapshot(self) -> dict:
+        return blackbook.get_snapshot()
+
+    def olympus_snapshot(self) -> dict:
+        return olympus.get_snapshot()
 
     def olympus_status(self) -> dict:
-        from connectors.olympus import get_pnl_summary
+        snapshot = olympus.get_snapshot()
+        if not snapshot.get("connected"):
+            return {"success": False, "error": "Olympus database/report artifacts are unavailable."}
 
-        return get_pnl_summary()
+        performance = snapshot.get("performance") or {}
+        cycle = snapshot.get("latest_cycle") or {}
+        summary = {
+            "daily_pnl": performance.get("avg_pnl", 0),
+            "total_pnl": performance.get("total_pnl", 0),
+            "open_positions": [],
+            "position_count": 0,
+            "alerts": [event.get("description") for event in snapshot.get("recent_events", [])[:3]],
+            "last_updated": cycle.get("cycle_timestamp") or snapshot.get("report_updated_at"),
+            "is_stale": not bool(snapshot.get("db_updated_at")),
+            "total_trades": performance.get("total_trades", 0),
+        }
+        return {"success": True, "summary": summary, "snapshot": snapshot}
+
+    def maridian_snapshot(self) -> dict:
+        return maridian.get_snapshot()
 
     def search_meridian(self, query: str, n_results: int = 5) -> list[dict]:
         from search.retriever import search_meridian
@@ -54,22 +77,16 @@ class PantheonConnectors:
         return queue_meridian_prompt(prompt)
 
     def run_meridian_cycle(self) -> dict:
-        from connectors.meridian import trigger_meridian_cycle
-
-        return trigger_meridian_cycle()
+        return maridian.run_cycle()
 
     def record_decision(self, decision: str, reasoning: str | None, domain: str | None) -> None:
         log_decision(decision=decision, reasoning=reasoning, domain=domain or "general")
 
     def record_expense(self, amount: float, description: str, category: str, account: str, date_str: str | None) -> dict:
-        from connectors.black_book import add_expense
-
-        return add_expense(amount, description, category, account, date_str)
+        return blackbook.add_expense(amount, description, category, account, date_str)
 
     def record_income(self, amount: float, description: str, account: str, date_str: str | None) -> dict:
-        from connectors.black_book import add_income
-
-        return add_income(amount, description, account, date_str)
+        return blackbook.add_income(amount, description, account, date_str)
 
     def approval_rule(self, action_type: str) -> dict | None:
         return get_approval_rule(action_type)
