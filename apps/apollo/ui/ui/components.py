@@ -4,7 +4,6 @@ import reflex as rx
 
 from .state import AuditItem, BalanceItem, Message, QuestionItem, SpendingItem, State, ThemeItem, TradeItem, TransactionItem
 
-
 BG = "#f5efe2"
 SURFACE = "rgba(255, 251, 244, 0.92)"
 SURFACE_SOFT = "rgba(252, 247, 238, 0.88)"
@@ -15,6 +14,8 @@ TEXT = "#221b14"
 TEXT_SOFT = "rgba(34, 27, 20, 0.82)"
 TEXT_MUTED = "rgba(34, 27, 20, 0.55)"
 ACCENT = "#8c6a2f"
+ACCENT_POS = "#2d6a4f"
+ACCENT_NEG = "#9c5d38"
 GRAPHITE = "#2c241d"
 USER_TINT = "rgba(142, 118, 83, 0.12)"
 APOLLO_TINT = "rgba(255, 255, 255, 0.72)"
@@ -174,17 +175,21 @@ def composer() -> rx.Component:
     )
 
 
-def metric_card(label: str, value, detail) -> rx.Component:
+def metric_card(label: str, value, detail: str = "") -> rx.Component:
     return shell_frame(
         rx.vstack(
             eyebrow(label),
             rx.text(value, color=GRAPHITE, font_size="24px", font_weight="600"),
-            rx.text(detail, color=TEXT_MUTED, font_size="13px", line_height="1.6"),
+            rx.cond(
+                detail != "",
+                rx.text(detail, color=TEXT_MUTED, font_size="12px", line_height="1.6"),
+                rx.fragment(),
+            ),
             width="100%",
             spacing="1",
             align="start",
         ),
-        padding="18px",
+        padding="16px 18px",
         background=SURFACE_STRONG,
     )
 
@@ -217,6 +222,96 @@ def section(title: str, subtitle: str, body: rx.Component) -> rx.Component:
             align="start",
         ),
         padding="22px",
+    )
+
+
+def loading_skeleton(rows: int = 4) -> rx.Component:
+    widths = ["78%", "58%", "68%", "52%", "72%"]
+    return rx.vstack(
+        *[rx.box(
+            height="14px",
+            width=widths[i % len(widths)],
+            background="rgba(140, 106, 47, 0.12)",
+            border_radius="4px",
+        ) for i in range(rows)],
+        gap="10px",
+        width="100%",
+    )
+
+
+def spending_chart() -> rx.Component:
+    return rx.recharts.responsive_container(
+        rx.recharts.bar_chart(
+            rx.recharts.bar(data_key="amount", fill=ACCENT),
+            rx.recharts.x_axis(data_key="name"),
+            rx.recharts.y_axis(),
+            rx.recharts.tooltip(),
+            data=State.spending_chart_data,
+            margin={"top": 8, "right": 8, "left": 0, "bottom": 0},
+        ),
+        width="100%",
+        height=220,
+    )
+
+
+def pnl_chart() -> rx.Component:
+    return rx.recharts.responsive_container(
+        rx.recharts.bar_chart(
+            rx.recharts.bar(data_key="pnl", fill=ACCENT),
+            rx.recharts.x_axis(data_key="name"),
+            rx.recharts.y_axis(),
+            rx.recharts.tooltip(),
+            rx.recharts.reference_line(y=0, stroke=BORDER_STRONG),
+            data=State.pnl_chart_data,
+            margin={"top": 8, "right": 8, "left": 0, "bottom": 0},
+        ),
+        width="100%",
+        height=220,
+    )
+
+
+def toast() -> rx.Component:
+    return rx.cond(
+        State.toast_visible,
+        rx.box(
+            rx.hstack(
+                rx.text(
+                    State.toast_message,
+                    color=rx.cond(State.toast_type == "error", ACCENT_NEG, ACCENT_POS),
+                    font_size="14px",
+                    font_weight="500",
+                    flex="1",
+                ),
+                rx.button(
+                    "×",
+                    on_click=State.dismiss_toast,
+                    background="transparent",
+                    border="none",
+                    cursor="pointer",
+                    color=TEXT_MUTED,
+                    font_size="18px",
+                    padding="0",
+                    line_height="1",
+                    height="auto",
+                    min_width="auto",
+                ),
+                width="100%",
+                align="center",
+                gap="12px",
+            ),
+            position="fixed",
+            bottom="32px",
+            right="32px",
+            background=SURFACE_STRONG,
+            border=f"1px solid {BORDER_STRONG}",
+            border_radius="14px",
+            padding="14px 18px",
+            box_shadow="0 8px 40px rgba(68, 45, 10, 0.18)",
+            z_index="9999",
+            max_width="360px",
+            min_width="220px",
+        ),
+        rx.fragment(),
     )
 
 
@@ -301,55 +396,65 @@ def option(value: str) -> rx.Component:
 
 
 def blackbook_form() -> rx.Component:
-    return rx.vstack(
-        rx.text(State.blackbook_notice, color=ACCENT, font_size="13px"),
-        rx.flex(
-            shell_frame(
-                rx.vstack(
-                    eyebrow("Quick expense"),
-                    rx.input(placeholder="Amount", value=State.expense_amount, on_change=State.set_expense_amount),
-                    rx.input(placeholder="Description", value=State.expense_description, on_change=State.set_expense_description),
-                    rx.input(placeholder="Category", value=State.expense_category, on_change=State.set_expense_category),
-                    rx.el.select(
-                        rx.foreach(State.blackbook_accounts, option),
-                        value=State.expense_account,
-                        on_change=State.set_expense_account,
-                    ),
-                    nav_button("Add Expense", True, State.submit_expense),
+    return rx.box(
+        shell_frame(
+            rx.vstack(
+                eyebrow("Quick expense"),
+                rx.input(placeholder="Amount", value=State.expense_amount, on_change=State.set_expense_amount),
+                rx.input(placeholder="Description", value=State.expense_description, on_change=State.set_expense_description),
+                rx.input(placeholder="Category", value=State.expense_category, on_change=State.set_expense_category),
+                rx.el.select(
+                    rx.foreach(State.blackbook_accounts, option),
+                    value=State.expense_account,
+                    on_change=State.set_expense_account,
                     width="100%",
-                    spacing="3",
-                    align="start",
+                    padding="8px",
+                    border=f"1px solid {BORDER_STRONG}",
+                    border_radius="8px",
+                    background=SURFACE_STRONG,
+                    color=GRAPHITE,
+                    font_size="14px",
                 ),
-                padding="18px",
+                nav_button("Add Expense", True, State.submit_expense),
+                width="100%",
+                spacing="3",
+                align="start",
             ),
-            shell_frame(
-                rx.vstack(
-                    eyebrow("Quick income"),
-                    rx.input(placeholder="Amount", value=State.income_amount, on_change=State.set_income_amount),
-                    rx.input(placeholder="Description", value=State.income_description, on_change=State.set_income_description),
-                    rx.el.select(
-                        rx.foreach(State.blackbook_accounts, option),
-                        value=State.income_account,
-                        on_change=State.set_income_account,
-                    ),
-                    nav_button("Add Income", True, State.submit_income),
-                    width="100%",
-                    spacing="3",
-                    align="start",
-                ),
-                padding="18px",
-            ),
-            wrap="wrap",
-            gap="18px",
-            width="100%",
+            padding="18px",
         ),
+        shell_frame(
+            rx.vstack(
+                eyebrow("Quick income"),
+                rx.input(placeholder="Amount", value=State.income_amount, on_change=State.set_income_amount),
+                rx.input(placeholder="Description", value=State.income_description, on_change=State.set_income_description),
+                rx.el.select(
+                    rx.foreach(State.blackbook_accounts, option),
+                    value=State.income_account,
+                    on_change=State.set_income_account,
+                    width="100%",
+                    padding="8px",
+                    border=f"1px solid {BORDER_STRONG}",
+                    border_radius="8px",
+                    background=SURFACE_STRONG,
+                    color=GRAPHITE,
+                    font_size="14px",
+                ),
+                nav_button("Add Income", True, State.submit_income),
+                width="100%",
+                spacing="3",
+                align="start",
+            ),
+            padding="18px",
+        ),
+        display="grid",
+        grid_template_columns=["1fr", "1fr 1fr"],
+        gap="18px",
         width="100%",
-        spacing="4",
     )
 
 
 def overview_panel() -> rx.Component:
-    return rx.flex(
+    return rx.vstack(
         section(
             "System Pulse",
             "Overview",
@@ -361,146 +466,274 @@ def overview_panel() -> rx.Component:
                 spacing="4",
             ),
         ),
-        section(
-            "Financial Core",
-            "BlackBook",
-            rx.flex(
-                metric_card("Net Worth", State.net_worth, "Live from BlackBook's shared balance logic."),
-                metric_card("Assets", State.total_assets, "Current assets under BlackBook."),
-                metric_card("Debt", State.total_debt, "Current debts under BlackBook."),
-                wrap="wrap",
-                gap="16px",
-                width="100%",
+        rx.box(
+            section(
+                "Financial Core",
+                "BlackBook",
+                rx.cond(
+                    State.context_loading,
+                    loading_skeleton(3),
+                    rx.box(
+                        metric_card("Net Worth", State.net_worth),
+                        metric_card("Assets", State.total_assets),
+                        metric_card("Debt", State.total_debt),
+                        display="grid",
+                        grid_template_columns="repeat(3, 1fr)",
+                        gap="12px",
+                        width="100%",
+                    ),
+                ),
             ),
-        ),
-        section(
-            "Reflection Engine",
-            "Maridian",
-            rx.flex(
-                metric_card("Cycle", State.maridian_cycle_count, "Current Maridian cycle count."),
-                metric_card("Entries", State.maridian_entries_processed, "Entries processed by Maridian."),
-                metric_card("Last Cycle", State.maridian_last_cycle, "Most recent recorded cycle run."),
-                wrap="wrap",
-                gap="16px",
-                width="100%",
+            section(
+                "Reflection Engine",
+                "Maridian",
+                rx.cond(
+                    State.context_loading,
+                    loading_skeleton(3),
+                    rx.box(
+                        metric_card("Cycle", State.maridian_cycle_count),
+                        metric_card("Entries", State.maridian_entries_processed),
+                        metric_card("Last Cycle", State.maridian_last_cycle),
+                        display="grid",
+                        grid_template_columns="repeat(3, 1fr)",
+                        gap="12px",
+                        width="100%",
+                    ),
+                ),
             ),
-        ),
-        section(
-            "Trading Runtime",
-            "Olympus",
-            rx.flex(
-                metric_card("Total PnL", State.olympus_total_pnl, "Read-only Olympus performance summary."),
-                metric_card("Trades", State.olympus_total_trades, "Completed trades recorded in Olympus."),
-                metric_card("Avg R", State.olympus_avg_r, "Average R multiple across recorded trades."),
-                wrap="wrap",
-                gap="16px",
-                width="100%",
+            section(
+                "Trading Runtime",
+                "Olympus",
+                rx.cond(
+                    State.context_loading,
+                    loading_skeleton(3),
+                    rx.box(
+                        metric_card("Total PnL", State.olympus_total_pnl),
+                        metric_card("Trades", State.olympus_total_trades),
+                        metric_card("Avg R", State.olympus_avg_r),
+                        display="grid",
+                        grid_template_columns="repeat(3, 1fr)",
+                        gap="12px",
+                        width="100%",
+                    ),
+                ),
             ),
+            display="grid",
+            grid_template_columns=["1fr", "repeat(2, 1fr)", "repeat(3, 1fr)"],
+            gap="20px",
+            width="100%",
         ),
-        wrap="wrap",
-        gap="20px",
+        spacing="5",
+        align="stretch",
         width="100%",
     )
 
 
 def blackbook_panel() -> rx.Component:
-    return rx.flex(
-        section(
-            "Balances",
-            "BlackBook",
-            rx.box(rx.foreach(State.blackbook_balances, balance_row), width="100%"),
+    return rx.vstack(
+        rx.box(
+            metric_card("Net Worth", State.net_worth, "Live from BlackBook"),
+            metric_card("Total Assets", State.total_assets),
+            metric_card("Total Debt", State.total_debt),
+            display="grid",
+            grid_template_columns=["1fr", "repeat(3, 1fr)"],
+            gap="16px",
+            width="100%",
         ),
-        section(
-            "Recent Transactions",
-            "Ledger",
-            rx.box(rx.foreach(State.blackbook_transactions, transaction_row), width="100%"),
+        rx.box(
+            section(
+                "Balances",
+                "BlackBook",
+                rx.cond(
+                    State.context_loading,
+                    loading_skeleton(4),
+                    rx.box(rx.foreach(State.blackbook_balances, balance_row), width="100%"),
+                ),
+            ),
+            section(
+                "Spending This Month",
+                "Summary",
+                rx.vstack(
+                    spending_chart(),
+                    rx.cond(
+                        State.context_loading,
+                        loading_skeleton(3),
+                        rx.box(rx.foreach(State.blackbook_spending, spending_row), width="100%"),
+                    ),
+                    width="100%",
+                    spacing="4",
+                ),
+            ),
+            display="grid",
+            grid_template_columns=["1fr", "1fr 1fr"],
+            gap="20px",
+            width="100%",
         ),
-        section(
-            "Spending This Month",
-            "Summary",
-            rx.box(rx.foreach(State.blackbook_spending, spending_row), width="100%"),
+        rx.box(
+            section(
+                "Recent Transactions",
+                "Ledger",
+                rx.cond(
+                    State.context_loading,
+                    loading_skeleton(5),
+                    rx.box(rx.foreach(State.blackbook_transactions, transaction_row), width="100%"),
+                ),
+            ),
+            section("Quick Actions", "Write", blackbook_form()),
+            display="grid",
+            grid_template_columns=["1fr", "1fr 1fr"],
+            gap="20px",
+            width="100%",
         ),
-        section("Quick Actions", "Write", blackbook_form()),
-        wrap="wrap",
-        gap="20px",
+        spacing="5",
+        align="stretch",
         width="100%",
     )
 
 
 def maridian_panel() -> rx.Component:
-    return rx.flex(
-        section(
-            "Cycle Status",
-            "Maridian",
-            rx.vstack(
-                metric_card("Status", rx.cond(State.maridian_locked, "Locked", "Idle"), "Real lock-state from Maridian."),
-                metric_card("Last Cycle", State.maridian_last_cycle, "Most recent Maridian cycle."),
-                rx.text(State.maridian_notice, color=ACCENT, font_size="13px"),
-                nav_button(rx.cond(State.maridian_running, "Running...", "Run Cycle"), True, State.run_maridian_cycle),
-                width="100%",
-                spacing="4",
+    return rx.vstack(
+        rx.box(
+            section(
+                "Cycle Status",
+                "Maridian",
+                rx.vstack(
+                    rx.box(
+                        metric_card("Last Cycle", State.maridian_last_cycle),
+                        metric_card("Entries", State.maridian_entries_processed),
+                        display="grid",
+                        grid_template_columns="1fr 1fr",
+                        gap="12px",
+                        width="100%",
+                    ),
+                    rx.cond(
+                        State.maridian_running,
+                        rx.hstack(
+                            rx.box(
+                                width="8px",
+                                height="8px",
+                                border_radius="50%",
+                                background=ACCENT,
+                                flex_shrink="0",
+                            ),
+                            rx.text("Maridian cycle running...", color=ACCENT, font_size="14px", font_weight="500"),
+                            align="center",
+                            gap="8px",
+                        ),
+                        nav_button("Run Cycle", True, State.run_maridian_cycle),
+                    ),
+                    width="100%",
+                    spacing="4",
+                ),
             ),
+            section(
+                "Today's Questions",
+                "Adaptive prompts",
+                rx.cond(
+                    State.context_loading,
+                    loading_skeleton(4),
+                    rx.box(rx.foreach(State.maridian_questions, question_row), width="100%"),
+                ),
+            ),
+            display="grid",
+            grid_template_columns=["1fr", "1fr 1fr"],
+            gap="20px",
+            width="100%",
         ),
-        section(
-            "Today's Questions",
-            "Adaptive prompts",
-            rx.box(rx.foreach(State.maridian_questions, question_row), width="100%"),
+        rx.box(
+            section(
+                "Top Themes",
+                "Synced context",
+                rx.cond(
+                    State.context_loading,
+                    loading_skeleton(4),
+                    rx.box(rx.foreach(State.maridian_themes, theme_row), width="100%"),
+                ),
+            ),
+            section(
+                "Index Excerpt",
+                "Context",
+                rx.text(State.maridian_index_excerpt, color=TEXT_SOFT, font_size="13px", line_height="1.8", white_space="pre-wrap"),
+            ),
+            display="grid",
+            grid_template_columns=["1fr", "1fr 1fr"],
+            gap="20px",
+            width="100%",
         ),
-        section(
-            "Top Themes",
-            "Synced context",
-            rx.box(rx.foreach(State.maridian_themes, theme_row), width="100%"),
-        ),
-        section(
-            "Index Excerpt",
-            "Context",
-            rx.text(State.maridian_index_excerpt, color=TEXT_SOFT, font_size="13px", line_height="1.8", white_space="pre-wrap"),
-        ),
-        wrap="wrap",
-        gap="20px",
+        spacing="5",
+        align="stretch",
         width="100%",
     )
 
 
 def olympus_panel() -> rx.Component:
-    return rx.flex(
-        section(
-            "Runtime Summary",
-            "Olympus",
-            rx.vstack(
-                metric_card("Total PnL", State.olympus_total_pnl, "Pulled from Olympus trade memory."),
-                metric_card("Trades", State.olympus_total_trades, "Recorded completed trades."),
-                metric_card("Last Trade", State.olympus_last_trade, "Latest exit recorded in Olympus."),
-                rx.text(State.olympus_cycle_summary, color=TEXT_MUTED, font_size="13px"),
-                width="100%",
-                spacing="4",
+    return rx.vstack(
+        rx.box(
+            section(
+                "Runtime Summary",
+                "Olympus",
+                rx.vstack(
+                    rx.box(
+                        metric_card("Total PnL", State.olympus_total_pnl),
+                        metric_card("Trades", State.olympus_total_trades),
+                        metric_card("Avg R", State.olympus_avg_r),
+                        display="grid",
+                        grid_template_columns="repeat(3, 1fr)",
+                        gap="12px",
+                        width="100%",
+                    ),
+                    rx.text(State.olympus_cycle_summary, color=TEXT_MUTED, font_size="13px"),
+                    width="100%",
+                    spacing="4",
+                ),
             ),
+            section(
+                "PnL by Trade",
+                "Recent exits",
+                rx.cond(
+                    State.context_loading,
+                    loading_skeleton(4),
+                    pnl_chart(),
+                ),
+            ),
+            display="grid",
+            grid_template_columns=["1fr", "1fr 1fr"],
+            gap="20px",
+            width="100%",
         ),
         section(
             "Recent Trades",
             "Read-only",
-            rx.box(rx.foreach(State.olympus_recent_trades, trade_row), width="100%"),
+            rx.cond(
+                State.context_loading,
+                loading_skeleton(5),
+                rx.box(rx.foreach(State.olympus_recent_trades, trade_row), width="100%"),
+            ),
         ),
         section(
             "Latest Report",
             "Apex context",
             rx.text(State.olympus_report_excerpt, color=TEXT_SOFT, font_size="13px", line_height="1.8", white_space="pre-wrap"),
         ),
-        wrap="wrap",
-        gap="20px",
+        spacing="5",
+        align="stretch",
         width="100%",
     )
 
 
 def activity_panel() -> rx.Component:
-    return rx.flex(
+    return rx.vstack(
         section(
             "Recent Audit",
             "Pantheon activity",
-            rx.box(rx.foreach(State.audit_items, audit_row), width="100%"),
+            rx.cond(
+                State.context_loading,
+                loading_skeleton(5),
+                rx.box(rx.foreach(State.audit_items, audit_row), width="100%"),
+            ),
         ),
-        wrap="wrap",
-        gap="20px",
+        spacing="5",
+        align="stretch",
         width="100%",
     )
 
@@ -537,7 +770,7 @@ def content_shell() -> rx.Component:
             top_nav(),
             rx.cond(
                 State.context_error != "",
-                rx.text(f"Context error: {State.context_error}", color="#9c5d38", font_size="13px"),
+                rx.text(f"Context error: {State.context_error}", color=ACCENT_NEG, font_size="13px"),
                 rx.box(),
             ),
             rx.cond(State.active_tab == "apollo", apollo_tab(), pantheon_panel()),
@@ -561,6 +794,7 @@ def dashboard_layout() -> rx.Component:
             position="relative",
             z_index="1",
         ),
+        toast(),
         min_height="100vh",
         background=BG,
         position="relative",

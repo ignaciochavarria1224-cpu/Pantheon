@@ -135,6 +135,12 @@ class State(rx.State):
 
     audit_items: List[AuditItem] = []
 
+    spending_chart_data: List[dict] = []
+    pnl_chart_data: List[dict] = []
+    toast_message: str = ""
+    toast_visible: bool = False
+    toast_type: str = "success"
+
     def switch_to_apollo(self):
         self.active_tab = "apollo"
 
@@ -242,6 +248,10 @@ class State(rx.State):
                 )
                 for item in blackbook.get("spending_month", [])[:6]
             ]
+            self.spending_chart_data = [
+                {"name": item.get("category", "Other"), "amount": round(float(item.get("total", 0) or 0), 2)}
+                for item in blackbook.get("spending_month", [])[:8]
+            ]
             self.blackbook_accounts = [item.get("name", "") for item in blackbook.get("accounts", [])]
             if self.blackbook_accounts and not self.expense_account:
                 self.expense_account = self.blackbook_accounts[0]
@@ -287,6 +297,13 @@ class State(rx.State):
                     exit_reason=item.get("exit_reason", ""),
                     exit_time=_format_timestamp(item.get("exit_time")),
                 )
+                for item in olympus.get("recent_trades", [])[:8]
+            ]
+            self.pnl_chart_data = [
+                {
+                    "name": f"{item.get('symbol', '')} {item.get('direction', '')[:1]}",
+                    "pnl": round(float(item.get("realized_pnl", 0) or 0), 2),
+                }
                 for item in olympus.get("recent_trades", [])[:8]
             ]
             self.olympus_report_excerpt = _truncate(olympus.get("report_excerpt", ""), 900) or "No Olympus report available."
@@ -355,8 +372,15 @@ class State(rx.State):
             pass
         return State.refresh_context
 
+    def show_toast(self, message: str, toast_type: str = "success"):
+        self.toast_message = message
+        self.toast_visible = True
+        self.toast_type = toast_type
+
+    def dismiss_toast(self):
+        self.toast_visible = False
+
     def submit_expense(self):
-        self.blackbook_notice = ""
         try:
             requests.post(
                 f"{APOLLO_API}/pantheon/blackbook/expense",
@@ -368,15 +392,14 @@ class State(rx.State):
                 },
                 timeout=15,
             ).raise_for_status()
-            self.blackbook_notice = "Expense recorded."
+            self.show_toast("Expense recorded.", "success")
             self.expense_amount = ""
             self.expense_description = ""
         except Exception as exc:
-            self.blackbook_notice = f"Expense failed: {exc}"
+            self.show_toast(f"Expense failed: {exc}", "error")
         return State.refresh_context
 
     def submit_income(self):
-        self.blackbook_notice = ""
         try:
             requests.post(
                 f"{APOLLO_API}/pantheon/blackbook/income",
@@ -387,21 +410,20 @@ class State(rx.State):
                 },
                 timeout=15,
             ).raise_for_status()
-            self.blackbook_notice = "Income recorded."
+            self.show_toast("Income recorded.", "success")
             self.income_amount = ""
             self.income_description = ""
         except Exception as exc:
-            self.blackbook_notice = f"Income failed: {exc}"
+            self.show_toast(f"Income failed: {exc}", "error")
         return State.refresh_context
 
     def run_maridian_cycle(self):
-        self.maridian_notice = ""
         self.maridian_running = True
         yield
         try:
             requests.post(f"{APOLLO_API}/pantheon/maridian/run-cycle", timeout=320).raise_for_status()
-            self.maridian_notice = "Maridian cycle completed."
+            self.show_toast("Maridian cycle completed.", "success")
         except Exception as exc:
-            self.maridian_notice = f"Cycle failed: {exc}"
+            self.show_toast(f"Cycle failed: {exc}", "error")
         self.maridian_running = False
         yield State.refresh_context
