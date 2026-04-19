@@ -1,22 +1,20 @@
 from __future__ import annotations
 
-import sys
 import os
+import sys
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-from config import BLACKBOOK_APP_PATH, BLACK_BOOK_DB_URL
+from config import BLACKBOOK_APP_PATH, BLACKBOOK_DB_PATH
 
 
 def _queries():
     app_path = Path(BLACKBOOK_APP_PATH)
-    if BLACK_BOOK_DB_URL and not os.environ.get("DATABASE_URL"):
-        os.environ["DATABASE_URL"] = BLACK_BOOK_DB_URL
+    os.environ.setdefault("BLACKBOOK_DB_PATH", BLACKBOOK_DB_PATH)
     if str(app_path) not in sys.path:
         sys.path.insert(0, str(app_path))
     from BlackBook.db import queries
-
     return queries
 
 
@@ -59,8 +57,7 @@ def get_snapshot() -> dict[str, Any]:
 
 
 def get_account_balances() -> list[dict[str, Any]]:
-    snapshot = get_snapshot()
-    return snapshot.get("balances", [])
+    return get_snapshot().get("balances", [])
 
 
 def get_recent_transactions(limit: int = 20) -> list[dict[str, Any]]:
@@ -94,10 +91,9 @@ def add_expense(
 ) -> dict[str, Any]:
     queries = _queries()
     accounts = queries.load_accounts()
-    account = next((item for item in accounts if item["name"].lower() == account_name.lower()), None)
+    account = next((a for a in accounts if a["name"].lower() == account_name.lower()), None)
     if not account:
         return {"success": False, "error": f"Account '{account_name}' not found."}
-
     queries.add_transaction(
         tx_date=date.fromisoformat(tx_date) if tx_date else date.today(),
         description=description,
@@ -120,10 +116,9 @@ def add_income(
 ) -> dict[str, Any]:
     queries = _queries()
     accounts = queries.load_accounts()
-    account = next((item for item in accounts if item["name"].lower() == account_name.lower()), None)
+    account = next((a for a in accounts if a["name"].lower() == account_name.lower()), None)
     if not account:
         return {"success": False, "error": f"Account '{account_name}' not found."}
-
     queries.add_transaction(
         tx_date=date.fromisoformat(tx_date) if tx_date else date.today(),
         description=description,
@@ -135,3 +130,109 @@ def add_income(
         notes=notes,
     )
     return {"success": True}
+
+
+# ── Holdings ───────────────────────────────────────────────────────────────────
+
+def get_holdings_snapshot() -> dict[str, Any]:
+    try:
+        queries = _queries()
+        holdings = queries.load_holdings()
+        price_cache = {(p["symbol"], p["asset_type"]): p for p in queries.load_price_cache()}
+        settings = queries.get_settings()
+        last_refresh = settings.get("last_price_refresh_at", "")
+
+        enriched = []
+        portfolio_value = 0.0
+        portfolio_invested = 0.0
+
+        for h in holdings:
+            key = (h["symbol"], h["asset_type"])
+            price_row = price_cache.get(key)
+            price = float(price_row["price"]) if price_row else 0.0
+            qty = float(h.get("quantity") or 0)
+            invested = float(h.get("amount_invested") or 0)
+            value = round(price * qty, 2)
+            pnl = round(value - invested, 2)
+            pnl_pct = round((pnl / invested * 100), 2) if invested else 0.0
+
+            portfolio_value += value
+            portfolio_invested += invested
+
+            enriched.append({
+                "id": h["id"],
+                "symbol": h["symbol"],
+                "display_name": h["display_name"],
+                "asset_type": h["asset_type"],
+                "account": h["account"],
+                "quantity": qty,
+                "price": price,
+                "value": value,
+                "pnl": pnl,
+                "pnl_pct": pnl_pct,
+                "is_positive": pnl >= 0,
+            })
+
+        portfolio_pnl = round(portfolio_value - portfolio_invested, 2)
+        return {
+            "holdings": enriched,
+            "portfolio_value": round(portfolio_value, 2),
+            "portfolio_pnl": portfolio_pnl,
+            "portfolio_invested": round(portfolio_invested, 2),
+            "last_refresh": last_refresh,
+        }
+    except Exception as exc:
+        return {
+            "holdings": [],
+            "portfolio_value": 0,
+            "portfolio_pnl": 0,
+            "portfolio_invested": 0,
+            "last_refresh": "",
+            "error": str(exc),
+        }
+
+
+# ── Journal ────────────────────────────────────────────────────────────────────
+
+def get_journal_entries(tag_filter: str = "All", limit: int = 50) -> list[dict[str, Any]]:
+    try:
+        return _queries().load_journal_entries(limit=limit, tag_filter=tag_filter)
+    except Exception:
+        return []
+
+
+def create_journal_entry(entry_date: str, tag: str, body: str) -> dict[str, Any]:
+    try:
+        _queries().save_journal_entry(
+            entry_date=date.fromisoformat(entry_date) if entry_date else date.today(),
+            tag=tag,
+            body=body,
+        )
+        return {"success": True}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def delete_journal_entry(entry_id: int) -> dict[str, Any]:
+    try:
+        _queries().delete_journal_entry(entry_id)
+        return {"success": True}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+# ── Settings ───────────────────────────────────────────────────────────────────
+
+def get_bb_settings() -> dict[str, str]:
+    try:
+        return _queries().get_settings()
+    except Exception:
+        return {}
+
+
+def save_bb_settings(data: dict[str, Any]) -> dict[str, Any]:
+    try:
+        _queries().set_settings(data)
+        return {"success": True}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}

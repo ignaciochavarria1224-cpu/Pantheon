@@ -49,6 +49,26 @@ class QuestionItem(BaseModel):
     context: str = ""
 
 
+class HoldingItem(BaseModel):
+    symbol: str
+    display_name: str
+    asset_type: str
+    account: str
+    quantity: str
+    price: str
+    value: str
+    pnl: str
+    pnl_pct: str
+    is_positive: bool
+
+
+class JournalEntry(BaseModel):
+    id: int
+    entry_date: str
+    tag: str
+    body: str
+
+
 class TradeItem(BaseModel):
     symbol: str
     direction: str
@@ -106,6 +126,8 @@ class State(rx.State):
     blackbook_accounts: List[str] = []
     blackbook_notice: str = ""
 
+    blackbook_section: str = "accounts"
+
     expense_amount: str = ""
     expense_description: str = ""
     expense_category: str = "Other"
@@ -114,6 +136,26 @@ class State(rx.State):
     income_amount: str = ""
     income_description: str = ""
     income_account: str = ""
+
+    holdings: List[HoldingItem] = []
+    portfolio_value: str = "$0.00"
+    portfolio_pnl: str = "$0.00"
+    holdings_last_refresh: str = "Never"
+
+    journal_entries: List[JournalEntry] = []
+    journal_form_date: str = ""
+    journal_form_tag: str = "General"
+    journal_form_body: str = ""
+    journal_filter_tag: str = "All"
+
+    bb_daily_food_budget: str = "30"
+    bb_pay_period_days: str = "14"
+    bb_savings_pct: str = "0.30"
+    bb_spending_pct: str = "0.40"
+    bb_crypto_pct: str = "0.10"
+    bb_taxable_pct: str = "0.10"
+    bb_roth_pct: str = "0.10"
+    bb_next_payday: str = ""
 
     maridian_locked: bool = False
     maridian_cycle_count: str = "0"
@@ -190,6 +232,56 @@ class State(rx.State):
 
     def set_income_account(self, value: str):
         self.income_account = value
+
+    def show_bb_accounts(self):
+        self.blackbook_section = "accounts"
+
+    def show_bb_holdings(self):
+        self.blackbook_section = "holdings"
+
+    def show_bb_journal(self):
+        self.blackbook_section = "journal"
+        return State.load_journal
+
+    def show_bb_settings(self):
+        self.blackbook_section = "settings"
+
+    def set_journal_date(self, value: str):
+        self.journal_form_date = value
+
+    def set_journal_tag(self, value: str):
+        self.journal_form_tag = value
+
+    def set_journal_body(self, value: str):
+        self.journal_form_body = value
+
+    def set_journal_filter(self, tag: str):
+        self.journal_filter_tag = tag
+        return State.load_journal
+
+    def set_bb_daily_food_budget(self, v: str):
+        self.bb_daily_food_budget = v
+
+    def set_bb_pay_period_days(self, v: str):
+        self.bb_pay_period_days = v
+
+    def set_bb_savings_pct(self, v: str):
+        self.bb_savings_pct = v
+
+    def set_bb_spending_pct(self, v: str):
+        self.bb_spending_pct = v
+
+    def set_bb_crypto_pct(self, v: str):
+        self.bb_crypto_pct = v
+
+    def set_bb_taxable_pct(self, v: str):
+        self.bb_taxable_pct = v
+
+    def set_bb_roth_pct(self, v: str):
+        self.bb_roth_pct = v
+
+    def set_bb_next_payday(self, v: str):
+        self.bb_next_payday = v
 
     def load_dashboard(self):
         return State.refresh_context
@@ -318,11 +410,118 @@ class State(rx.State):
                 for item in activity.get("audit", [])[:10]
             ]
 
+            try:
+                holdings_data = requests.get(f"{APOLLO_API}/pantheon/blackbook/holdings", timeout=10).json()
+                self.portfolio_value = f"${float(holdings_data.get('portfolio_value', 0) or 0):,.2f}"
+                self.portfolio_pnl = f"${float(holdings_data.get('portfolio_pnl', 0) or 0):,.2f}"
+                self.holdings_last_refresh = holdings_data.get("last_refresh") or "Never"
+                self.holdings = [
+                    HoldingItem(
+                        symbol=item.get("symbol", ""),
+                        display_name=item.get("display_name", ""),
+                        asset_type=item.get("asset_type", ""),
+                        account=item.get("account", ""),
+                        quantity=f"{float(item.get('quantity', 0) or 0):.4f}",
+                        price=f"${float(item.get('price', 0) or 0):,.2f}",
+                        value=f"${float(item.get('value', 0) or 0):,.2f}",
+                        pnl=f"${float(item.get('pnl', 0) or 0):,.2f}",
+                        pnl_pct=f"{float(item.get('pnl_pct', 0) or 0):.1f}%",
+                        is_positive=bool(item.get("is_positive", True)),
+                    )
+                    for item in holdings_data.get("holdings", [])
+                ]
+            except Exception:
+                pass
+
+            try:
+                settings_data = requests.get(f"{APOLLO_API}/pantheon/blackbook/settings", timeout=10).json()
+                self.bb_daily_food_budget = settings_data.get("daily_food_budget", "30")
+                self.bb_pay_period_days = settings_data.get("pay_period_days", "14")
+                self.bb_savings_pct = settings_data.get("savings_pct", "0.30")
+                self.bb_spending_pct = settings_data.get("spending_pct", "0.40")
+                self.bb_crypto_pct = settings_data.get("crypto_pct", "0.10")
+                self.bb_taxable_pct = settings_data.get("taxable_investing_pct", "0.10")
+                self.bb_roth_pct = settings_data.get("roth_ira_pct", "0.10")
+                self.bb_next_payday = settings_data.get("next_payday", "")
+            except Exception:
+                pass
+
             self.last_refreshed = datetime.now().strftime("%H:%M:%S")
         except Exception as exc:
             self.context_error = str(exc)
         finally:
             self.context_loading = False
+
+    def load_journal(self):
+        try:
+            data = requests.get(
+                f"{APOLLO_API}/pantheon/blackbook/journal",
+                params={"tag": self.journal_filter_tag, "limit": 50},
+                timeout=10,
+            ).json()
+            self.journal_entries = [
+                JournalEntry(
+                    id=int(item.get("id", 0)),
+                    entry_date=item.get("entry_date", ""),
+                    tag=item.get("tag", ""),
+                    body=item.get("body", ""),
+                )
+                for item in (data if isinstance(data, list) else [])
+            ]
+        except Exception:
+            pass
+
+    def submit_journal_entry(self):
+        if not self.journal_form_body.strip():
+            self.show_toast("Body cannot be empty.", "error")
+            return
+        try:
+            requests.post(
+                f"{APOLLO_API}/pantheon/blackbook/journal",
+                json={
+                    "entry_date": self.journal_form_date or None,
+                    "tag": self.journal_form_tag,
+                    "body": self.journal_form_body,
+                },
+                timeout=15,
+            ).raise_for_status()
+            self.show_toast("Entry saved.", "success")
+            self.journal_form_body = ""
+            self.journal_form_date = ""
+        except Exception as exc:
+            self.show_toast(f"Failed: {exc}", "error")
+        return State.load_journal
+
+    def delete_journal_entry(self, entry_id: int):
+        try:
+            requests.delete(
+                f"{APOLLO_API}/pantheon/blackbook/journal/{entry_id}",
+                timeout=10,
+            ).raise_for_status()
+            self.show_toast("Entry deleted.", "success")
+        except Exception as exc:
+            self.show_toast(f"Delete failed: {exc}", "error")
+        return State.load_journal
+
+    def save_bb_settings(self):
+        try:
+            requests.post(
+                f"{APOLLO_API}/pantheon/blackbook/settings",
+                json={"settings": {
+                    "daily_food_budget": self.bb_daily_food_budget,
+                    "pay_period_days": self.bb_pay_period_days,
+                    "savings_pct": self.bb_savings_pct,
+                    "spending_pct": self.bb_spending_pct,
+                    "crypto_pct": self.bb_crypto_pct,
+                    "taxable_investing_pct": self.bb_taxable_pct,
+                    "roth_ira_pct": self.bb_roth_pct,
+                    "next_payday": self.bb_next_payday,
+                }},
+                timeout=15,
+            ).raise_for_status()
+            self.show_toast("Settings saved.", "success")
+        except Exception as exc:
+            self.show_toast(f"Save failed: {exc}", "error")
 
     def send_message(self):
         if not self.input_text.strip():

@@ -1,17 +1,15 @@
 """
-db/queries.py — All Neon PostgreSQL queries for Black Book.
-Shares the same DB as the old Streamlit app (no data migration needed).
+db/queries.py — SQLite queries for Black Book.
 """
 from __future__ import annotations
 
 import json
 import os
-import re
+import sqlite3
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
-import psycopg2
-import psycopg2.extras
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -73,31 +71,22 @@ STOCK_NAME_TO_TICKER = {
 
 # ── Connection ─────────────────────────────────────────────────────────────────
 
-def _to_pooler_url(url: str) -> str:
-    if ":6543" in url:
-        return url
-    url = re.sub(r'(@[^/:@\s]+):5432/', r'\1:6543/', url)
-    url = re.sub(r'(@[^/:@\s]+)(/[^?])', r'\1:6543\2', url)
-    return url
+BLACKBOOK_DB_PATH = os.environ.get(
+    "BLACKBOOK_DB_PATH",
+    str(Path(__file__).resolve().parents[4] / "TBD" / "Pantheon" / "data" / "blackbook.db"),
+)
 
 
-def get_connection():
-    url = os.environ.get("DATABASE_URL", "")
-    if not url:
-        raise RuntimeError("DATABASE_URL not set")
-    if "sslmode" not in url:
-        sep = "&" if "?" in url else "?"
-        url += f"{sep}sslmode=require"
-    try:
-        return psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor, connect_timeout=8)
-    except Exception:
-        pooler = _to_pooler_url(url)
-        return psycopg2.connect(pooler, cursor_factory=psycopg2.extras.RealDictCursor, connect_timeout=8)
+def get_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(BLACKBOOK_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
 
 
 def _rows(cur) -> list[dict]:
-    rows = cur.fetchall()
-    return [dict(r) for r in rows]
+    return [dict(r) for r in cur.fetchall()]
 
 
 def _one(cur) -> dict | None:
@@ -109,19 +98,21 @@ def _one(cur) -> dict | None:
 
 def init_db() -> None:
     ddl = [
-        "CREATE TABLE IF NOT EXISTS accounts (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, account_type TEXT NOT NULL, is_debt INTEGER NOT NULL DEFAULT 0, include_in_runway INTEGER NOT NULL DEFAULT 1, starting_balance REAL NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0, current_balance_override REAL DEFAULT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, account_type TEXT NOT NULL, is_debt INTEGER NOT NULL DEFAULT 0, include_in_runway INTEGER NOT NULL DEFAULT 1, starting_balance REAL NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0, current_balance_override REAL DEFAULT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-        "CREATE TABLE IF NOT EXISTS transactions (id SERIAL PRIMARY KEY, date TEXT NOT NULL, description TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, account_id INTEGER NOT NULL, type TEXT NOT NULL, to_account_id INTEGER, notes TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(account_id) REFERENCES accounts(id), FOREIGN KEY(to_account_id) REFERENCES accounts(id))",
-        "CREATE TABLE IF NOT EXISTS holdings (id SERIAL PRIMARY KEY, symbol TEXT NOT NULL, display_name TEXT NOT NULL, asset_type TEXT NOT NULL, account_id INTEGER NOT NULL, amount_invested REAL NOT NULL DEFAULT 0, quantity REAL NOT NULL DEFAULT 0, avg_price REAL NOT NULL DEFAULT 0, coingecko_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(account_id) REFERENCES accounts(id))",
-        "CREATE TABLE IF NOT EXISTS allocation_snapshots (id SERIAL PRIMARY KEY, paycheck_amount REAL NOT NULL, run_date TEXT NOT NULL, debt_total REAL NOT NULL, food_reserved REAL NOT NULL, debt_reserved REAL NOT NULL, savings_reserved REAL NOT NULL, surplus_savings REAL NOT NULL DEFAULT 0, spending_reserved REAL NOT NULL, crypto_reserved REAL NOT NULL, taxable_reserved REAL NOT NULL, roth_reserved REAL NOT NULL, debt_breakdown_json TEXT NOT NULL, meta_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, description TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, account_id INTEGER NOT NULL, type TEXT NOT NULL, to_account_id INTEGER, notes TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(account_id) REFERENCES accounts(id), FOREIGN KEY(to_account_id) REFERENCES accounts(id))",
+        "CREATE TABLE IF NOT EXISTS holdings (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, display_name TEXT NOT NULL, asset_type TEXT NOT NULL, account_id INTEGER NOT NULL, amount_invested REAL NOT NULL DEFAULT 0, quantity REAL NOT NULL DEFAULT 0, avg_price REAL NOT NULL DEFAULT 0, coingecko_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(account_id) REFERENCES accounts(id))",
+        "CREATE TABLE IF NOT EXISTS allocation_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, paycheck_amount REAL NOT NULL, run_date TEXT NOT NULL, debt_total REAL NOT NULL, food_reserved REAL NOT NULL, debt_reserved REAL NOT NULL, savings_reserved REAL NOT NULL, surplus_savings REAL NOT NULL DEFAULT 0, spending_reserved REAL NOT NULL, crypto_reserved REAL NOT NULL, taxable_reserved REAL NOT NULL, roth_reserved REAL NOT NULL, debt_breakdown_json TEXT NOT NULL, meta_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS price_cache (symbol TEXT NOT NULL, asset_type TEXT NOT NULL, price REAL NOT NULL, previous_close REAL, currency TEXT NOT NULL DEFAULT 'USD', source TEXT NOT NULL, as_of_date TEXT NOT NULL, fetched_at TEXT NOT NULL, PRIMARY KEY(symbol, asset_type))",
-        "CREATE TABLE IF NOT EXISTS price_history (id SERIAL PRIMARY KEY, symbol TEXT NOT NULL, asset_type TEXT NOT NULL, price REAL NOT NULL, previous_close REAL, as_of_date TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS daily_reports (id SERIAL PRIMARY KEY, report_date TEXT NOT NULL UNIQUE, snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS journal_entries (id SERIAL PRIMARY KEY, entry_date TEXT NOT NULL, tag TEXT NOT NULL DEFAULT 'General', body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS advisor_memory (id SERIAL PRIMARY KEY, memory_date TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS advisor_conversations (id SERIAL PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS meridian_jobs (id SERIAL PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending', requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, started_at TEXT, completed_at TEXT, result TEXT)",
-        "CREATE TABLE IF NOT EXISTS meridian_notes (id SERIAL PRIMARY KEY, note_id TEXT NOT NULL, title TEXT NOT NULL, stage TEXT NOT NULL, fitness REAL, maturity INTEGER, domains TEXT, body TEXT, cycle INTEGER, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS price_history (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, asset_type TEXT NOT NULL, price REAL NOT NULL, previous_close REAL, as_of_date TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS daily_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, report_date TEXT NOT NULL UNIQUE, snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS journal_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_date TEXT NOT NULL, tag TEXT NOT NULL DEFAULT 'General', body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS advisor_memory (id INTEGER PRIMARY KEY AUTOINCREMENT, memory_date TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS advisor_conversations (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS meridian_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT NOT NULL DEFAULT 'pending', requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, started_at TEXT, completed_at TEXT, result TEXT)",
+        "CREATE TABLE IF NOT EXISTS meridian_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, note_id TEXT NOT NULL, title TEXT NOT NULL, stage TEXT NOT NULL, fitness REAL, maturity INTEGER, domains TEXT, body TEXT, cycle INTEGER, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS meridian_brain (id INTEGER PRIMARY KEY AUTOINCREMENT, theme TEXT NOT NULL UNIQUE, body TEXT NOT NULL, cycle INTEGER, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS meridian_questions (id INTEGER PRIMARY KEY AUTOINCREMENT, generated_date TEXT NOT NULL, questions TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
     ]
     conn = get_connection()
     try:
@@ -130,13 +121,13 @@ def init_db() -> None:
             cur.execute(stmt)
         for k, v in DEFAULT_SETTINGS.items():
             cur.execute(
-                "INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT(key) DO NOTHING",
+                "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (k, v),
             )
         for a in DEFAULT_ACCOUNTS:
             cur.execute(
-                "INSERT INTO accounts (name, account_type, is_debt, include_in_runway, starting_balance, sort_order) "
-                "VALUES (%s, %s, %s, %s, 0.0, %s) ON CONFLICT(name) DO NOTHING",
+                "INSERT OR IGNORE INTO accounts (name, account_type, is_debt, include_in_runway, starting_balance, sort_order) "
+                "VALUES (?, ?, ?, ?, 0.0, ?)",
                 (a["name"], a["account_type"], a["is_debt"], a["include_in_runway"], a["sort_order"]),
             )
         conn.commit()
@@ -162,8 +153,7 @@ def set_settings(settings: dict[str, Any]) -> None:
         cur = conn.cursor()
         for k, v in settings.items():
             cur.execute(
-                "INSERT INTO settings (key, value) VALUES (%s, %s) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
                 (k, str(v)),
             )
         conn.commit()
@@ -194,8 +184,8 @@ def add_account(name: str, account_type: str, is_debt: int, include_in_runway: i
         cur.execute("SELECT COUNT(*) AS count FROM accounts")
         sort_order = int(_one(cur)["count"]) + 1
         cur.execute(
-            "INSERT INTO accounts (name, account_type, is_debt, include_in_runway, starting_balance, sort_order) "
-            "VALUES (%s, %s, %s, %s, 0.0, %s) ON CONFLICT(name) DO NOTHING",
+            "INSERT OR IGNORE INTO accounts (name, account_type, is_debt, include_in_runway, starting_balance, sort_order) "
+            "VALUES (?, ?, ?, ?, 0.0, ?)",
             (name, account_type, is_debt, include_in_runway, sort_order),
         )
         conn.commit()
@@ -208,7 +198,7 @@ def update_account_balance_override(account_id: int, override: float | None) -> 
     try:
         cur = conn.cursor()
         cur.execute(
-            "UPDATE accounts SET current_balance_override = %s WHERE id = %s",
+            "UPDATE accounts SET current_balance_override = ? WHERE id = ?",
             (override, account_id),
         )
         conn.commit()
@@ -227,7 +217,7 @@ def add_transaction(
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO transactions (date, description, category, amount, account_id, type, to_account_id, notes) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 tx_date.strftime(DATE_FMT), description.strip(), category,
                 float(amount), int(account_id), tx_type,
@@ -244,7 +234,7 @@ def delete_transaction(tx_id: int) -> None:
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM transactions WHERE id = %s", (int(tx_id),))
+        cur.execute("DELETE FROM transactions WHERE id = ?", (int(tx_id),))
         conn.commit()
     finally:
         conn.close()
@@ -262,7 +252,7 @@ def load_transactions(limit: int = 200) -> list[dict]:
                JOIN accounts a ON a.id = t.account_id
                LEFT JOIN accounts ta ON ta.id = t.to_account_id
                ORDER BY t.date DESC, t.id DESC
-               LIMIT %s""",
+               LIMIT ?""",
             (limit,),
         )
         return _rows(cur)
@@ -270,82 +260,61 @@ def load_transactions(limit: int = 200) -> list[dict]:
         conn.close()
 
 
-def calculate_account_balances(
-    accounts: list[dict] | None = None,
-    transactions: list[dict] | None = None,
-) -> list[dict]:
-    accounts = accounts if accounts is not None else load_accounts()
-    transactions = transactions if transactions is not None else load_transactions(limit=5000)
+# ── Holdings ───────────────────────────────────────────────────────────────────
 
-    balances: dict[int, float] = {}
+def calculate_account_balances(
+    accounts: list[dict],
+    transactions: list[dict],
+    mode: str = "ledger",
+) -> list[dict]:
+    """Calculate per-account balances from transaction truth."""
+
+    ledger_balances: dict[int, float] = {}
+    override_balances: dict[int, float | None] = {}
+
     for acct in accounts:
         aid = int(acct["id"])
-        starting_balance = float(acct.get("starting_balance") or 0)
+        ledger_balances[aid] = float(acct.get("starting_balance") or 0)
         override = acct.get("current_balance_override")
-        balances[aid] = float(override) if override is not None else starting_balance
+        override_balances[aid] = float(override) if override is not None else None
 
     for tx in transactions:
         aid = int(tx.get("account_id") or 0)
         to_account_id = tx.get("to_account_id")
         amount = float(tx.get("amount") or 0)
         tx_type = str(tx.get("type") or "")
+
         if tx_type == "income":
-            balances[aid] = balances.get(aid, 0.0) + amount
+            ledger_balances[aid] = ledger_balances.get(aid, 0) + amount
         elif tx_type == "expense":
-            balances[aid] = balances.get(aid, 0.0) - amount
+            ledger_balances[aid] = ledger_balances.get(aid, 0) - amount
         elif tx_type == "transfer" and to_account_id:
-            to_account_id = int(to_account_id)
-            balances[aid] = balances.get(aid, 0.0) - amount
-            balances[to_account_id] = balances.get(to_account_id, 0.0) + amount
+            to_aid = int(to_account_id)
+            ledger_balances[aid] = ledger_balances.get(aid, 0) - amount
+            ledger_balances[to_aid] = ledger_balances.get(to_aid, 0) + amount
 
     results: list[dict] = []
     for acct in accounts:
         aid = int(acct["id"])
-        balance = round(balances.get(aid, 0.0), 2)
-        is_debt = bool(int(acct.get("is_debt") or 0))
+        ledger_balance = round(ledger_balances.get(aid, 0.0), 2)
+        override_balance = override_balances.get(aid)
+        final_balance = override_balance if mode == "override" and override_balance is not None else ledger_balance
         results.append(
             {
                 "id": aid,
                 "name": str(acct.get("name") or ""),
                 "account_type": str(acct.get("account_type") or ""),
-                "is_debt": is_debt,
-                "balance": balance,
-                "current_balance_override": acct.get("current_balance_override"),
-                "starting_balance": float(acct.get("starting_balance") or 0),
-                "sort_order": int(acct.get("sort_order") or 0),
+                "is_debt": bool(int(acct.get("is_debt") or 0)),
+                "include_in_runway": bool(int(acct.get("include_in_runway") or 0)),
+                "starting_balance": round(float(acct.get("starting_balance") or 0), 2),
+                "ledger_balance": ledger_balance,
+                "override_balance": override_balance,
+                "override_active": override_balance is not None,
+                "balance": round(float(final_balance or 0), 2),
             }
         )
     return results
 
-
-def get_spending_summary(period: str = "month") -> list[dict]:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        if period == "month":
-            date_filter = "DATE_TRUNC('month', CAST(date AS DATE)) = DATE_TRUNC('month', CURRENT_DATE)"
-        elif period == "week":
-            date_filter = "CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '7 days'"
-        else:
-            date_filter = "DATE_TRUNC('year', CAST(date AS DATE)) = DATE_TRUNC('year', CURRENT_DATE)"
-
-        cur.execute(
-            f"""
-            SELECT category,
-                   ROUND(SUM(amount)::numeric, 2) AS total,
-                   COUNT(*) AS count
-            FROM transactions
-            WHERE type = 'expense' AND {date_filter}
-            GROUP BY category
-            ORDER BY total DESC
-            """
-        )
-        return _rows(cur)
-    finally:
-        conn.close()
-
-
-# ── Holdings ───────────────────────────────────────────────────────────────────
 
 def add_holding(
     symbol: str, display_name: str, asset_type: str, account_id: int,
@@ -357,7 +326,7 @@ def add_holding(
         cur.execute(
             "INSERT INTO holdings (symbol, display_name, asset_type, account_id, "
             "amount_invested, quantity, avg_price, coingecko_id) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 symbol.upper().strip(), display_name.strip(), asset_type,
                 int(account_id), float(amount_invested), float(quantity),
@@ -374,8 +343,8 @@ def update_holding(holding_id: int, amount_invested: float, quantity: float, avg
     try:
         cur = conn.cursor()
         cur.execute(
-            "UPDATE holdings SET amount_invested=%s, quantity=%s, avg_price=%s, "
-            "updated_at=CURRENT_TIMESTAMP WHERE id=%s",
+            "UPDATE holdings SET amount_invested=?, quantity=?, avg_price=?, "
+            "updated_at=CURRENT_TIMESTAMP WHERE id=?",
             (float(amount_invested), float(quantity), float(avg_price), int(holding_id)),
         )
         conn.commit()
@@ -387,7 +356,7 @@ def delete_holding(holding_id: int) -> None:
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM holdings WHERE id = %s", (int(holding_id),))
+        cur.execute("DELETE FROM holdings WHERE id = ?", (int(holding_id),))
         conn.commit()
     finally:
         conn.close()
@@ -420,17 +389,15 @@ def upsert_price(
     try:
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO price_cache (symbol, asset_type, price, previous_close, currency, source, as_of_date, fetched_at)
-               VALUES (%s, %s, %s, %s, 'USD', %s, %s, %s)
-               ON CONFLICT(symbol, asset_type) DO UPDATE SET
-                 price=excluded.price, previous_close=excluded.previous_close,
-                 source=excluded.source, as_of_date=excluded.as_of_date, fetched_at=excluded.fetched_at""",
+            "INSERT OR REPLACE INTO price_cache "
+            "(symbol, asset_type, price, previous_close, currency, source, as_of_date, fetched_at) "
+            "VALUES (?, ?, ?, ?, 'USD', ?, ?, ?)",
             (symbol, asset_type, price, previous_close, source, as_of_date, fetched_at),
         )
         cur.execute(
-            """INSERT INTO price_history (symbol, asset_type, price, previous_close, as_of_date, source)
-               SELECT %s, %s, %s, %s, %s, %s WHERE NOT EXISTS
-               (SELECT 1 FROM price_history WHERE symbol=%s AND asset_type=%s AND as_of_date=%s)""",
+            "INSERT INTO price_history (symbol, asset_type, price, previous_close, as_of_date, source) "
+            "SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS "
+            "(SELECT 1 FROM price_history WHERE symbol=? AND asset_type=? AND as_of_date=?)",
             (symbol, asset_type, price, previous_close, as_of_date, source, symbol, asset_type, as_of_date),
         )
         conn.commit()
@@ -472,7 +439,7 @@ def save_allocation_snapshot(payload: dict[str, Any]) -> None:
                (paycheck_amount, run_date, debt_total, food_reserved, debt_reserved,
                 savings_reserved, surplus_savings, spending_reserved, crypto_reserved,
                 taxable_reserved, roth_reserved, debt_breakdown_json, meta_json)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 payload["paycheck_amount"], payload["run_date"], payload["debt_total"],
                 payload["food_reserved"], payload["debt_reserved"], payload["savings_reserved"],
@@ -491,7 +458,7 @@ def load_allocation_snapshots(limit: int = 10) -> list[dict]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT * FROM allocation_snapshots ORDER BY run_date DESC, id DESC LIMIT %s",
+            "SELECT * FROM allocation_snapshots ORDER BY run_date DESC, id DESC LIMIT ?",
             (limit,),
         )
         return _rows(cur)
@@ -506,8 +473,7 @@ def save_daily_report(report_date: str, snapshot: dict[str, Any]) -> None:
     try:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO daily_reports (report_date, snapshot_json) VALUES (%s, %s) "
-            "ON CONFLICT(report_date) DO NOTHING",
+            "INSERT OR IGNORE INTO daily_reports (report_date, snapshot_json) VALUES (?, ?)",
             (report_date, json.dumps(snapshot)),
         )
         conn.commit()
@@ -520,7 +486,7 @@ def load_daily_reports(limit: int = 30) -> list[dict]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT report_date, snapshot_json FROM daily_reports ORDER BY report_date DESC LIMIT %s",
+            "SELECT report_date, snapshot_json FROM daily_reports ORDER BY report_date DESC LIMIT ?",
             (limit,),
         )
         result = []
@@ -540,7 +506,7 @@ def delete_daily_report(report_date: str) -> None:
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM daily_reports WHERE report_date = %s", (report_date,))
+        cur.execute("DELETE FROM daily_reports WHERE report_date = ?", (report_date,))
         conn.commit()
     finally:
         conn.close()
@@ -550,7 +516,7 @@ def report_exists(report_date: str) -> bool:
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) AS count FROM daily_reports WHERE report_date = %s", (report_date,))
+        cur.execute("SELECT COUNT(*) AS count FROM daily_reports WHERE report_date = ?", (report_date,))
         return bool(int(_one(cur)["count"]))
     finally:
         conn.close()
@@ -563,7 +529,7 @@ def save_journal_entry(entry_date: date, tag: str, body: str) -> None:
     try:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO journal_entries (entry_date, tag, body) VALUES (%s, %s, %s)",
+            "INSERT INTO journal_entries (entry_date, tag, body) VALUES (?, ?, ?)",
             (entry_date.strftime(DATE_FMT), tag, body.strip()),
         )
         conn.commit()
@@ -578,13 +544,13 @@ def load_journal_entries(limit: int = 50, tag_filter: str = "All") -> list[dict]
         if tag_filter == "All":
             cur.execute(
                 "SELECT id, entry_date, tag, body FROM journal_entries "
-                "ORDER BY entry_date DESC, id DESC LIMIT %s",
+                "ORDER BY entry_date DESC, id DESC LIMIT ?",
                 (limit,),
             )
         else:
             cur.execute(
                 "SELECT id, entry_date, tag, body FROM journal_entries "
-                "WHERE tag = %s ORDER BY entry_date DESC, id DESC LIMIT %s",
+                "WHERE tag = ? ORDER BY entry_date DESC, id DESC LIMIT ?",
                 (tag_filter, limit),
             )
         return _rows(cur)
@@ -596,7 +562,7 @@ def delete_journal_entry(entry_id: int) -> None:
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM journal_entries WHERE id = %s", (int(entry_id),))
+        cur.execute("DELETE FROM journal_entries WHERE id = ?", (int(entry_id),))
         conn.commit()
     finally:
         conn.close()
@@ -609,7 +575,7 @@ def save_advisor_memory(body: str) -> None:
     try:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO advisor_memory (memory_date, body) VALUES (%s, %s)",
+            "INSERT INTO advisor_memory (memory_date, body) VALUES (?, ?)",
             (date.today().strftime(DATE_FMT), body.strip()),
         )
         conn.commit()
@@ -622,7 +588,7 @@ def load_advisor_memory(limit: int = 50) -> str:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT memory_date, body FROM advisor_memory ORDER BY memory_date DESC, id DESC LIMIT %s",
+            "SELECT memory_date, body FROM advisor_memory ORDER BY memory_date DESC, id DESC LIMIT ?",
             (limit,),
         )
         rows = cur.fetchall()
@@ -638,7 +604,7 @@ def load_advisor_memory_list(limit: int = 50) -> list[dict]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, memory_date, body FROM advisor_memory ORDER BY memory_date DESC, id DESC LIMIT %s",
+            "SELECT id, memory_date, body FROM advisor_memory ORDER BY memory_date DESC, id DESC LIMIT ?",
             (limit,),
         )
         return _rows(cur)
@@ -650,7 +616,7 @@ def delete_advisor_memory_entry(entry_id: int) -> None:
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM advisor_memory WHERE id = %s", (int(entry_id),))
+        cur.execute("DELETE FROM advisor_memory WHERE id = ?", (int(entry_id),))
         conn.commit()
     finally:
         conn.close()
@@ -663,7 +629,7 @@ def save_conversation_message(session_id: str, role: str, content: str) -> None:
     try:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO advisor_conversations (session_id, role, content) VALUES (%s, %s, %s)",
+            "INSERT INTO advisor_conversations (session_id, role, content) VALUES (?, ?, ?)",
             (session_id, role, content),
         )
         conn.commit()
@@ -677,7 +643,7 @@ def load_conversation_history(session_id: str) -> list[dict]:
         cur = conn.cursor()
         cur.execute(
             "SELECT role, content FROM advisor_conversations "
-            "WHERE session_id = %s ORDER BY created_at ASC, id ASC",
+            "WHERE session_id = ? ORDER BY created_at ASC, id ASC",
             (session_id,),
         )
         return [{"role": str(r["role"]), "content": str(r["content"])} for r in cur.fetchall()]
@@ -698,7 +664,7 @@ def list_conversation_sessions(limit: int = 20) -> list[dict]:
                FROM advisor_conversations c1
                GROUP BY session_id
                ORDER BY created_at DESC
-               LIMIT %s""",
+               LIMIT ?""",
             (limit,),
         )
         return _rows(cur)
@@ -710,7 +676,7 @@ def delete_conversation_session(session_id: str) -> None:
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM advisor_conversations WHERE session_id = %s", (session_id,))
+        cur.execute("DELETE FROM advisor_conversations WHERE session_id = ?", (session_id,))
         conn.commit()
     finally:
         conn.close()
@@ -718,8 +684,27 @@ def delete_conversation_session(session_id: str) -> None:
 
 # ── Meridian ───────────────────────────────────────────────────────────────────
 
+def get_spending_summary(period: str = "month") -> list[dict]:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        if period == "month":
+            date_filter = "strftime('%Y-%m', date) = strftime('%Y-%m', 'now')"
+        elif period == "week":
+            date_filter = "date >= date('now', '-7 days')"
+        else:
+            date_filter = "strftime('%Y', date) = strftime('%Y', 'now')"
+        cur.execute(
+            f"SELECT category, ROUND(SUM(amount), 2) AS total, COUNT(*) AS count "
+            f"FROM transactions WHERE type = 'expense' AND {date_filter} "
+            f"GROUP BY category ORDER BY total DESC"
+        )
+        return _rows(cur)
+    finally:
+        conn.close()
+
+
 def load_meridian_brain() -> list[dict]:
-    """Load all wiki theme pages from Meridian."""
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -735,7 +720,6 @@ def load_meridian_brain() -> list[dict]:
 
 
 def load_meridian_index() -> str:
-    """Load the Meridian INDEX body."""
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -749,13 +733,12 @@ def load_meridian_index() -> str:
 
 
 def load_meridian_questions(limit: int = 5) -> list[dict]:
-    """Load the most recent Meridian questions."""
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
             "SELECT generated_date, questions FROM meridian_questions "
-            "ORDER BY generated_date DESC LIMIT %s",
+            "ORDER BY generated_date DESC LIMIT ?",
             (limit,),
         )
         result = []

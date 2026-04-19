@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .state import AuditItem, BalanceItem, Message, QuestionItem, SpendingItem, State, ThemeItem, TradeItem, TransactionItem
+from .state import AuditItem, BalanceItem, HoldingItem, JournalEntry, Message, QuestionItem, SpendingItem, State, ThemeItem, TradeItem, TransactionItem
 
 BG = "#f5efe2"
 SURFACE = "rgba(255, 251, 244, 0.92)"
@@ -529,7 +529,275 @@ def overview_panel() -> rx.Component:
     )
 
 
-def blackbook_panel() -> rx.Component:
+def holding_row(item: HoldingItem) -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.vstack(
+                rx.text(item.symbol, color=GRAPHITE, font_size="14px", font_weight="700"),
+                rx.text(item.display_name, color=TEXT_MUTED, font_size="11px"),
+                spacing="0",
+                align="start",
+            ),
+            rx.spacer(),
+            rx.text(item.account, color=TEXT_MUTED, font_size="11px"),
+            rx.text(item.asset_type, color=TEXT_MUTED, font_size="11px", min_width="52px", text_align="right"),
+            width="100%",
+            align="center",
+        ),
+        rx.hstack(
+            rx.text(item.price, color=TEXT_SOFT, font_size="13px", min_width="76px"),
+            rx.text(f"× {item.quantity}", color=TEXT_MUTED, font_size="13px"),
+            rx.spacer(),
+            rx.text(item.value, color=GRAPHITE, font_size="13px", font_weight="600"),
+            rx.text(
+                item.pnl,
+                color=rx.cond(item.is_positive, ACCENT_POS, ACCENT_NEG),
+                font_size="13px",
+                font_weight="500",
+                min_width="72px",
+                text_align="right",
+            ),
+            rx.text(
+                item.pnl_pct,
+                color=rx.cond(item.is_positive, ACCENT_POS, ACCENT_NEG),
+                font_size="12px",
+                min_width="52px",
+                text_align="right",
+            ),
+            width="100%",
+            align="center",
+        ),
+        width="100%",
+        spacing="1",
+        align="start",
+        padding_y="10px",
+        border_bottom=f"1px solid {BORDER}",
+    )
+
+
+def journal_entry_row(item: JournalEntry) -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.text(item.entry_date, color=ACCENT, font_size="12px", font_weight="600"),
+            rx.box(
+                rx.text(item.tag, font_size="11px", color=GRAPHITE, font_weight="500"),
+                background=f"rgba(140, 106, 47, 0.1)",
+                border_radius="999px",
+                padding="2px 10px",
+            ),
+            rx.spacer(),
+            rx.button(
+                "×",
+                on_click=lambda: State.delete_journal_entry(item.id),
+                background="transparent",
+                border="none",
+                cursor="pointer",
+                color=TEXT_MUTED,
+                font_size="16px",
+                padding="0",
+                min_width="auto",
+                height="auto",
+                line_height="1",
+            ),
+            width="100%",
+            align="center",
+            spacing="2",
+        ),
+        rx.text(item.body, color=TEXT_SOFT, font_size="14px", line_height="1.7", white_space="pre-wrap"),
+        width="100%",
+        spacing="2",
+        align="start",
+        padding_y="12px",
+        border_bottom=f"1px solid {BORDER}",
+    )
+
+
+def holdings_panel() -> rx.Component:
+    return rx.vstack(
+        rx.box(
+            metric_card("Portfolio Value", State.portfolio_value),
+            metric_card("Total P&L", State.portfolio_pnl),
+            metric_card("Last Refresh", State.holdings_last_refresh),
+            display="grid",
+            grid_template_columns=["1fr", "repeat(3, 1fr)"],
+            gap="16px",
+            width="100%",
+        ),
+        section(
+            "Holdings",
+            "Investments",
+            rx.cond(
+                State.context_loading,
+                loading_skeleton(5),
+                rx.cond(
+                    State.holdings.length() > 0,
+                    rx.box(rx.foreach(State.holdings, holding_row), width="100%"),
+                    rx.text("No holdings found.", color=TEXT_MUTED, font_size="14px"),
+                ),
+            ),
+        ),
+        spacing="5",
+        align="stretch",
+        width="100%",
+    )
+
+
+JOURNAL_TAGS = ["All", "General", "Finance", "Reflection", "Decision", "Goals", "Other"]
+
+
+def journal_panel() -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            *[rx.button(
+                t,
+                on_click=lambda tag=t: State.set_journal_filter(tag),
+                height="34px",
+                padding="0 14px",
+                border_radius="999px",
+                border=rx.cond(State.journal_filter_tag == t, "none", f"1px solid {BORDER}"),
+                background=rx.cond(State.journal_filter_tag == t, "linear-gradient(135deg, #9b7742 0%, #c3a46f 100%)", SURFACE_SOFT),
+                color=rx.cond(State.journal_filter_tag == t, "#fffaf2", GRAPHITE),
+                font_size="12px",
+                font_weight="600",
+                cursor="pointer",
+            ) for t in JOURNAL_TAGS],
+            width="100%",
+            wrap="wrap",
+            spacing="2",
+        ),
+        section(
+            "New Entry",
+            "Write",
+            rx.vstack(
+                rx.hstack(
+                    rx.input(
+                        placeholder="Date (YYYY-MM-DD, optional)",
+                        value=State.journal_form_date,
+                        on_change=State.set_journal_date,
+                        flex="1",
+                    ),
+                    rx.el.select(
+                        *[rx.el.option(t, value=t) for t in ["General", "Finance", "Reflection", "Decision", "Goals", "Other"]],
+                        value=State.journal_form_tag,
+                        on_change=State.set_journal_tag,
+                        padding="8px",
+                        border=f"1px solid {BORDER_STRONG}",
+                        border_radius="8px",
+                        background=SURFACE_STRONG,
+                        color=GRAPHITE,
+                        font_size="14px",
+                        min_width="130px",
+                    ),
+                    width="100%",
+                    spacing="3",
+                ),
+                rx.text_area(
+                    value=State.journal_form_body,
+                    on_change=State.set_journal_body,
+                    placeholder="Write your entry...",
+                    width="100%",
+                    min_height="120px",
+                    rows="5",
+                    resize="vertical",
+                    background=SURFACE_STRONG,
+                    padding="14px",
+                    color=GRAPHITE,
+                    font_size="14px",
+                    border=f"1px solid {BORDER_STRONG}",
+                ),
+                nav_button("Save Entry", True, State.submit_journal_entry),
+                width="100%",
+                spacing="3",
+                align="start",
+            ),
+        ),
+        section(
+            "Entries",
+            "Journal",
+            rx.cond(
+                State.journal_entries.length() > 0,
+                rx.box(rx.foreach(State.journal_entries, journal_entry_row), width="100%"),
+                rx.text("No entries yet. Write your first one above.", color=TEXT_MUTED, font_size="14px"),
+            ),
+        ),
+        spacing="5",
+        align="stretch",
+        width="100%",
+    )
+
+
+def settings_input(label: str, value, on_change) -> rx.Component:
+    return rx.vstack(
+        rx.text(label, color=TEXT_MUTED, font_size="11px", text_transform="uppercase", letter_spacing="0.12em"),
+        rx.input(value=value, on_change=on_change, width="100%"),
+        width="100%",
+        spacing="1",
+        align="start",
+    )
+
+
+def settings_panel() -> rx.Component:
+    return rx.vstack(
+        section(
+            "Budget",
+            "BlackBook Settings",
+            rx.box(
+                settings_input("Daily Food Budget ($)", State.bb_daily_food_budget, State.set_bb_daily_food_budget),
+                settings_input("Pay Period (days)", State.bb_pay_period_days, State.set_bb_pay_period_days),
+                display="grid",
+                grid_template_columns=["1fr", "1fr 1fr"],
+                gap="16px",
+                width="100%",
+            ),
+        ),
+        section(
+            "Allocation",
+            "Paycheck splits",
+            rx.box(
+                settings_input("Savings %", State.bb_savings_pct, State.set_bb_savings_pct),
+                settings_input("Spending %", State.bb_spending_pct, State.set_bb_spending_pct),
+                settings_input("Crypto %", State.bb_crypto_pct, State.set_bb_crypto_pct),
+                settings_input("Taxable Investing %", State.bb_taxable_pct, State.set_bb_taxable_pct),
+                settings_input("Roth IRA %", State.bb_roth_pct, State.set_bb_roth_pct),
+                display="grid",
+                grid_template_columns=["1fr", "1fr 1fr", "repeat(3, 1fr)"],
+                gap="16px",
+                width="100%",
+            ),
+        ),
+        section(
+            "Schedule",
+            "Dates",
+            rx.box(
+                settings_input("Next Payday", State.bb_next_payday, State.set_bb_next_payday),
+                display="grid",
+                grid_template_columns=["1fr", "1fr 1fr"],
+                gap="16px",
+                width="100%",
+            ),
+        ),
+        rx.box(
+            nav_button("Save Settings", True, State.save_bb_settings),
+        ),
+        spacing="5",
+        align="stretch",
+        width="100%",
+    )
+
+
+def blackbook_subnav() -> rx.Component:
+    return rx.hstack(
+        nav_button("Accounts", State.blackbook_section == "accounts", State.show_bb_accounts),
+        nav_button("Holdings", State.blackbook_section == "holdings", State.show_bb_holdings),
+        nav_button("Journal", State.blackbook_section == "journal", State.show_bb_journal),
+        nav_button("Settings", State.blackbook_section == "settings", State.show_bb_settings),
+        width="100%",
+        wrap="wrap",
+        spacing="3",
+    )
+
+
+def accounts_section() -> rx.Component:
     return rx.vstack(
         rx.box(
             metric_card("Net Worth", State.net_worth, "Live from BlackBook"),
@@ -584,6 +852,28 @@ def blackbook_panel() -> rx.Component:
             grid_template_columns=["1fr", "1fr 1fr"],
             gap="20px",
             width="100%",
+        ),
+        spacing="5",
+        align="stretch",
+        width="100%",
+    )
+
+
+def blackbook_panel() -> rx.Component:
+    return rx.vstack(
+        blackbook_subnav(),
+        rx.cond(
+            State.blackbook_section == "accounts",
+            accounts_section(),
+            rx.cond(
+                State.blackbook_section == "holdings",
+                holdings_panel(),
+                rx.cond(
+                    State.blackbook_section == "journal",
+                    journal_panel(),
+                    settings_panel(),
+                ),
+            ),
         ),
         spacing="5",
         align="stretch",

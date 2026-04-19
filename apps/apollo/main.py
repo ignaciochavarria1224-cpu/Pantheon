@@ -107,6 +107,16 @@ class QuickIncomeRequest(BaseModel):
     notes: str = ""
 
 
+class JournalEntryRequest(BaseModel):
+    entry_date: Optional[str] = None
+    tag: str = "General"
+    body: str
+
+
+class SettingsRequest(BaseModel):
+    settings: dict
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
     global conversation_history
@@ -225,6 +235,58 @@ async def pantheon_blackbook_income(payload: QuickIncomeRequest):
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Unable to add income"))
     return get_blackbook_snapshot()
+
+
+@app.get("/pantheon/blackbook/holdings")
+async def pantheon_blackbook_holdings():
+    return blackbook.get_holdings_snapshot()
+
+
+@app.post("/pantheon/blackbook/holdings/refresh")
+async def pantheon_blackbook_holdings_refresh():
+    from pantheon.services.blackbook import _queries
+    from datetime import datetime
+    queries = _queries()
+    queries.set_settings({"last_price_refresh_at": datetime.now().isoformat(timespec="seconds")})
+    return blackbook.get_holdings_snapshot()
+
+
+@app.get("/pantheon/blackbook/journal")
+async def pantheon_blackbook_journal(tag: str = "All", limit: int = 50):
+    return blackbook.get_journal_entries(tag_filter=tag, limit=limit)
+
+
+@app.post("/pantheon/blackbook/journal")
+async def pantheon_blackbook_journal_create(payload: JournalEntryRequest):
+    result = blackbook.create_journal_entry(
+        entry_date=payload.entry_date,
+        tag=payload.tag,
+        body=payload.body,
+    )
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to save entry"))
+    return result
+
+
+@app.delete("/pantheon/blackbook/journal/{entry_id}")
+async def pantheon_blackbook_journal_delete(entry_id: int):
+    result = blackbook.delete_journal_entry(entry_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to delete entry"))
+    return result
+
+
+@app.get("/pantheon/blackbook/settings")
+async def pantheon_blackbook_settings():
+    return blackbook.get_bb_settings()
+
+
+@app.post("/pantheon/blackbook/settings")
+async def pantheon_blackbook_settings_save(payload: SettingsRequest):
+    result = blackbook.save_bb_settings(payload.settings)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to save settings"))
+    return result
 
 
 @app.get("/pantheon/maridian")

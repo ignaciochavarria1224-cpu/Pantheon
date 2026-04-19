@@ -18,9 +18,6 @@ for path in (DATA_DIR, LOG_DIR, QUEUE_DIR, CHROMA_DIR, MIND_VAULT_DIR):
 load_dotenv(APP_ROOT / ".env")
 load_dotenv(REPO_ROOT / ".env")
 
-# API Keys
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-
 # Shared system roots
 BLACKBOOK_APP_PATH = Path(os.getenv("BLACKBOOK_APP_PATH", REPO_ROOT / "apps" / "blackbook"))
 MARIDIAN_APP_PATH = Path(os.getenv("MARIDIAN_APP_PATH", REPO_ROOT / "apps" / "maridian"))
@@ -28,6 +25,7 @@ OLYMPUS_APP_PATH = Path(os.getenv("OLYMPUS_APP_PATH", REPO_ROOT / "apps" / "olym
 
 # System connections
 BLACK_BOOK_DB_URL = os.getenv("BLACK_BOOK_DB_URL") or os.getenv("DATABASE_URL")
+BLACKBOOK_DB_PATH = str(Path(os.getenv("BLACKBOOK_DB_PATH", DATA_DIR / "blackbook.db")))
 MERIDIAN_VAULT_PATH = os.getenv("MERIDIAN_VAULT_PATH", str(MARIDIAN_APP_PATH))
 MERIDIAN_STATE_PATH = os.getenv("MERIDIAN_STATE_PATH", str(MARIDIAN_APP_PATH / "vault_state.json"))
 OLYMPUS_DB_PATH = os.getenv("OLYMPUS_DB_PATH", str(OLYMPUS_APP_PATH / "data" / "olympus.db"))
