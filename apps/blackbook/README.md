@@ -157,6 +157,11 @@ In the broader architecture:
 
 Pantheon should query BlackBook whenever it needs financial truth. It should not attempt to recreate or mirror BlackBook’s structured logic in prompts.
 
+Balance semantics are now explicit:
+
+- if `current_balance_override` is set, it is treated as the final current balance
+- if no override is set, balance is calculated as `starting_balance + ledger transactions`
+
 This boundary is important:
 
 - BlackBook answers "what happened financially?"

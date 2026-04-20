@@ -260,6 +260,90 @@ def load_transactions(limit: int = 200) -> list[dict]:
         conn.close()
 
 
+def calculate_account_balances(
+    accounts: list[dict] | None = None,
+    transactions: list[dict] | None = None,
+) -> list[dict]:
+    accounts = accounts if accounts is not None else load_accounts()
+    transactions = transactions if transactions is not None else load_transactions(limit=5000)
+
+    balances: dict[int, float] = {}
+    locked_overrides: set[int] = set()
+    for acct in accounts:
+        aid = int(acct["id"])
+        starting_balance = float(acct.get("starting_balance") or 0)
+        override = acct.get("current_balance_override")
+        if override is not None:
+            balances[aid] = float(override)
+            locked_overrides.add(aid)
+        else:
+            balances[aid] = starting_balance
+
+    for tx in transactions:
+        aid = int(tx.get("account_id") or 0)
+        to_account_id = tx.get("to_account_id")
+        amount = float(tx.get("amount") or 0)
+        tx_type = str(tx.get("type") or "")
+        if tx_type == "income":
+            if aid not in locked_overrides:
+                balances[aid] = balances.get(aid, 0.0) + amount
+        elif tx_type == "expense":
+            if aid not in locked_overrides:
+                balances[aid] = balances.get(aid, 0.0) - amount
+        elif tx_type == "transfer" and to_account_id:
+            to_account_id = int(to_account_id)
+            if aid not in locked_overrides:
+                balances[aid] = balances.get(aid, 0.0) - amount
+            if to_account_id not in locked_overrides:
+                balances[to_account_id] = balances.get(to_account_id, 0.0) + amount
+
+    results: list[dict] = []
+    for acct in accounts:
+        aid = int(acct["id"])
+        balance = round(balances.get(aid, 0.0), 2)
+        is_debt = bool(int(acct.get("is_debt") or 0))
+        results.append(
+            {
+                "id": aid,
+                "name": str(acct.get("name") or ""),
+                "account_type": str(acct.get("account_type") or ""),
+                "is_debt": is_debt,
+                "balance": balance,
+                "current_balance_override": acct.get("current_balance_override"),
+                "starting_balance": float(acct.get("starting_balance") or 0),
+                "sort_order": int(acct.get("sort_order") or 0),
+            }
+        )
+    return results
+
+
+def get_spending_summary(period: str = "month") -> list[dict]:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        if period == "month":
+            date_filter = "DATE_TRUNC('month', CAST(date AS DATE)) = DATE_TRUNC('month', CURRENT_DATE)"
+        elif period == "week":
+            date_filter = "CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '7 days'"
+        else:
+            date_filter = "DATE_TRUNC('year', CAST(date AS DATE)) = DATE_TRUNC('year', CURRENT_DATE)"
+
+        cur.execute(
+            f"""
+            SELECT category,
+                   ROUND(SUM(amount)::numeric, 2) AS total,
+                   COUNT(*) AS count
+            FROM transactions
+            WHERE type = 'expense' AND {date_filter}
+            GROUP BY category
+            ORDER BY total DESC
+            """
+        )
+        return _rows(cur)
+    finally:
+        conn.close()
+
+
 # ── Holdings ───────────────────────────────────────────────────────────────────
 
 def calculate_account_balances(

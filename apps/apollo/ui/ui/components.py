@@ -1078,6 +1078,253 @@ def pantheon_panel() -> rx.Component:
             ),
         ),
         width="100%",
+        spacing="4",
+    )
+
+
+def overview_panel() -> rx.Component:
+    return rx.flex(
+        section(
+            "System Pulse",
+            "Overview",
+            rx.vstack(
+                status_ribbon(),
+                rx.text(State.latest_signal, color=TEXT_SOFT, font_size="14px"),
+                rx.text(State.self_model_excerpt, color=TEXT_MUTED, font_size="13px", line_height="1.8"),
+                width="100%",
+                spacing="4",
+            ),
+        ),
+        section(
+            "Financial Core",
+            "BlackBook",
+            rx.flex(
+                metric_card("Net Worth", State.net_worth, "Live from BlackBook's shared balance logic."),
+                metric_card("Assets", State.total_assets, "Current assets under BlackBook."),
+                metric_card("Debt", State.total_debt, "Current debts under BlackBook."),
+                wrap="wrap",
+                gap="16px",
+                width="100%",
+            ),
+        ),
+        section(
+            "Reflection Engine",
+            "Maridian",
+            rx.flex(
+                metric_card("Cycle", State.maridian_cycle_count, "Current Maridian cycle count."),
+                metric_card("Entries", State.maridian_entries_processed, "Entries processed by Maridian."),
+                metric_card("Last Cycle", State.maridian_last_cycle, "Most recent recorded cycle run."),
+                wrap="wrap",
+                gap="16px",
+                width="100%",
+            ),
+        ),
+        section(
+            "Trading Runtime",
+            "Olympus",
+            rx.flex(
+                metric_card("Total PnL", State.olympus_total_pnl, "Read-only Olympus performance summary."),
+                metric_card("Trades", State.olympus_total_trades, "Completed trades recorded in Olympus."),
+                metric_card("Avg R", State.olympus_avg_r, "Average R multiple across recorded trades."),
+                wrap="wrap",
+                gap="16px",
+                width="100%",
+            ),
+        ),
+        wrap="wrap",
+        gap="20px",
+        width="100%",
+    )
+
+
+def blackbook_panel() -> rx.Component:
+    return rx.flex(
+        section(
+            "Balances",
+            "BlackBook",
+            rx.box(rx.foreach(State.blackbook_balances, balance_row), width="100%"),
+        ),
+        section(
+            "Recent Transactions",
+            "Ledger",
+            rx.box(rx.foreach(State.blackbook_transactions, transaction_row), width="100%"),
+        ),
+        section(
+            "Spending This Month",
+            "Summary",
+            rx.box(rx.foreach(State.blackbook_spending, spending_row), width="100%"),
+        ),
+        section("Quick Actions", "Write", blackbook_form()),
+        wrap="wrap",
+        gap="20px",
+        width="100%",
+    )
+
+
+def maridian_panel() -> rx.Component:
+    return rx.flex(
+        section(
+            "Cycle Status",
+            "Maridian",
+            rx.vstack(
+                metric_card("Status", rx.cond(State.maridian_locked, "Locked", "Idle"), "Real lock-state from Maridian."),
+                metric_card("Last Cycle", State.maridian_last_cycle, "Most recent Maridian cycle."),
+                rx.text(State.maridian_notice, color=ACCENT, font_size="13px"),
+                nav_button(rx.cond(State.maridian_running, "Running...", "Run Cycle"), True, State.run_maridian_cycle),
+                width="100%",
+                spacing="4",
+            ),
+        ),
+        section(
+            "Today's Questions",
+            "Adaptive prompts",
+            rx.box(rx.foreach(State.maridian_questions, question_row), width="100%"),
+        ),
+        section(
+            "Top Themes",
+            "Synced context",
+            rx.box(rx.foreach(State.maridian_themes, theme_row), width="100%"),
+        ),
+        section(
+            "Index Excerpt",
+            "Context",
+            rx.text(State.maridian_index_excerpt, color=TEXT_SOFT, font_size="13px", line_height="1.8", white_space="pre-wrap"),
+        ),
+        wrap="wrap",
+        gap="20px",
+        width="100%",
+    )
+
+
+def olympus_panel() -> rx.Component:
+    return rx.flex(
+        section(
+            "Runtime Summary",
+            "Olympus",
+            rx.vstack(
+                metric_card("Total PnL", State.olympus_total_pnl, "Pulled from Olympus trade memory."),
+                metric_card("Trades", State.olympus_total_trades, "Recorded completed trades."),
+                metric_card("Last Trade", State.olympus_last_trade, "Latest exit recorded in Olympus."),
+                rx.text(State.olympus_cycle_summary, color=TEXT_MUTED, font_size="13px"),
+                width="100%",
+                spacing="4",
+            ),
+        ),
+        section(
+            "Recent Trades",
+            "Read-only",
+            rx.box(rx.foreach(State.olympus_recent_trades, trade_row), width="100%"),
+        ),
+        section(
+            "Latest Report",
+            "Apex context",
+            rx.text(State.olympus_report_excerpt, color=TEXT_SOFT, font_size="13px", line_height="1.8", white_space="pre-wrap"),
+        ),
+        wrap="wrap",
+        gap="20px",
+        width="100%",
+    )
+
+
+def activity_panel() -> rx.Component:
+    return rx.flex(
+        section(
+            "Recent Audit",
+            "Pantheon activity",
+            rx.box(rx.foreach(State.audit_items, audit_row), width="100%"),
+        ),
+        wrap="wrap",
+        gap="20px",
+        width="100%",
+    )
+
+
+def doctor_panel() -> rx.Component:
+    return rx.flex(
+        section(
+            "Provider Health",
+            "Doctor",
+            rx.flex(
+                metric_card("Current", State.doctor_current_provider, "Provider currently used for open-ended reasoning."),
+                metric_card("Preferred", State.doctor_preferred_provider, "Configured priority order for Pantheon generation."),
+                metric_card(
+                    "Anthropic",
+                    State.anthropic_status,
+                    rx.cond(
+                        State.anthropic_model != "",
+                        State.anthropic_model,
+                        rx.cond(
+                            State.anthropic_reason != "",
+                            State.anthropic_reason,
+                            "Anthropic provider health.",
+                        ),
+                    ),
+                ),
+                metric_card(
+                    "Ollama",
+                    State.ollama_status,
+                    rx.cond(
+                        State.ollama_model != "",
+                        State.ollama_model,
+                        rx.cond(
+                            State.ollama_reason != "",
+                            State.ollama_reason,
+                            "Ollama runtime health.",
+                        ),
+                    ),
+                ),
+                wrap="wrap",
+                gap="16px",
+                width="100%",
+            ),
+        ),
+        section(
+            "Subsystem Health",
+            "Doctor",
+            rx.vstack(
+                list_row("BlackBook", State.blackbook_status, rx.cond(State.doctor_blackbook_reason != "", State.doctor_blackbook_reason, "BlackBook is reachable.")),
+                list_row("Maridian", State.maridian_status, rx.cond(State.doctor_maridian_reason != "", State.doctor_maridian_reason, "Maridian is reachable.")),
+                list_row("Olympus", State.olympus_status, rx.cond(State.doctor_olympus_reason != "", State.doctor_olympus_reason, "Olympus is reachable.")),
+                width="100%",
+                spacing="0",
+            ),
+        ),
+        section(
+            "Recent Traces",
+            "Doctor",
+            rx.box(rx.foreach(State.trace_items, trace_row), width="100%"),
+        ),
+        wrap="wrap",
+        gap="20px",
+        width="100%",
+    )
+
+
+def pantheon_panel() -> rx.Component:
+    return rx.vstack(
+        pantheon_subnav(),
+        rx.cond(
+            State.pantheon_section == "overview",
+            overview_panel(),
+            rx.cond(
+                State.pantheon_section == "blackbook",
+                blackbook_panel(),
+                rx.cond(
+                    State.pantheon_section == "maridian",
+                    maridian_panel(),
+                    rx.cond(
+                        State.pantheon_section == "olympus",
+                        olympus_panel(),
+                        rx.cond(
+                            State.pantheon_section == "activity",
+                            activity_panel(),
+                            doctor_panel(),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        width="100%",
         spacing="5",
         align="stretch",
     )

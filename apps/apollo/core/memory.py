@@ -72,6 +72,23 @@ def initialize_database():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS request_traces (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            audit_id TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            message TEXT NOT NULL,
+            provider_used TEXT,
+            model_name TEXT,
+            grounded INTEGER DEFAULT 0,
+            degraded INTEGER DEFAULT 0,
+            latency_ms INTEGER,
+            subsystems_json TEXT,
+            error_reason TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
     print("Apollo database initialized.")
@@ -192,6 +209,59 @@ def clear_session_rules():
     conn.execute("UPDATE approval_rules SET active = 0 WHERE scope = 'session'")
     conn.commit()
     conn.close()
+
+
+def save_request_trace(
+    audit_id: str,
+    channel: str,
+    message: str,
+    provider_used: str | None,
+    model_name: str | None,
+    grounded: bool,
+    degraded: bool,
+    latency_ms: int | None,
+    subsystems: list[str],
+    error_reason: str | None = None,
+):
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO request_traces (
+            timestamp, audit_id, channel, message, provider_used, model_name,
+            grounded, degraded, latency_ms, subsystems_json, error_reason
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        datetime.now().isoformat(),
+        audit_id,
+        channel,
+        message,
+        provider_used,
+        model_name,
+        1 if grounded else 0,
+        1 if degraded else 0,
+        latency_ms,
+        json.dumps(subsystems),
+        error_reason,
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_recent_traces(limit: int = 25) -> list:
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT * FROM request_traces ORDER BY timestamp DESC LIMIT ?
+    """, (limit,)).fetchall()
+    conn.close()
+    results = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["subsystems"] = json.loads(item.get("subsystems_json") or "[]")
+        except Exception:
+            item["subsystems"] = []
+        results.append(item)
+    return results
 
 if __name__ == "__main__":
     initialize_database()

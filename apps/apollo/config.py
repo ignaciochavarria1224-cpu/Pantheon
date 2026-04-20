@@ -23,6 +23,11 @@ BLACKBOOK_APP_PATH = Path(os.getenv("BLACKBOOK_APP_PATH", REPO_ROOT / "apps" / "
 MARIDIAN_APP_PATH = Path(os.getenv("MARIDIAN_APP_PATH", REPO_ROOT / "apps" / "maridian"))
 OLYMPUS_APP_PATH = Path(os.getenv("OLYMPUS_APP_PATH", REPO_ROOT / "apps" / "olympus"))
 
+# Shared system roots
+BLACKBOOK_APP_PATH = Path(os.getenv("BLACKBOOK_APP_PATH", REPO_ROOT / "apps" / "blackbook"))
+MARIDIAN_APP_PATH = Path(os.getenv("MARIDIAN_APP_PATH", REPO_ROOT / "apps" / "maridian"))
+OLYMPUS_APP_PATH = Path(os.getenv("OLYMPUS_APP_PATH", REPO_ROOT / "apps" / "olympus"))
+
 # System connections
 BLACK_BOOK_DB_URL = os.getenv("BLACK_BOOK_DB_URL") or os.getenv("DATABASE_URL")
 BLACKBOOK_DB_PATH = str(Path(os.getenv("BLACKBOOK_DB_PATH", DATA_DIR / "blackbook.db")))
@@ -52,3 +57,5 @@ MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1024"))
 # Pantheon runtime
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 PANTHEON_MODEL = os.getenv("PANTHEON_MODEL", "llama3.2")
+PANTHEON_PRIMARY_PROVIDER = os.getenv("PANTHEON_PRIMARY_PROVIDER", "anthropic")
+ANTHROPIC_TIMEOUT = float(os.getenv("ANTHROPIC_TIMEOUT", "45"))

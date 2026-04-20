@@ -1,11 +1,15 @@
+from __future__ import annotations
+
 import json
 import re
+import time
 from uuid import uuid4
 
 from core.audit import log
+from core.memory import save_request_trace
 from pantheon.connectors import PantheonConnectors
 from pantheon.models import PantheonResult
-from pantheon.runtime import LocalModelRuntime
+from pantheon.runtime import ProviderGateway
 
 SYSTEM_PROMPT = """You are Pantheon, the operating system behind Apollo.
 Use the structured subsystem context to answer clearly and concretely.
@@ -14,16 +18,18 @@ Do not invent data. If a subsystem is unavailable, say so plainly."""
 
 class PantheonReasoner:
     def __init__(self):
-        self.runtime = LocalModelRuntime()
+        self.runtime = ProviderGateway()
         self.connectors = PantheonConnectors()
 
     def reason(self, message: str, conversation_history: list | None = None, channel: str = "ui") -> PantheonResult:
         audit_id = uuid4().hex[:12]
+        started = time.perf_counter()
         normalized = (message or "").strip()
         tools_used: list[str] = []
         actions_taken: list[str] = []
         actions_proposed: list[str] = []
         sources: list[dict] = []
+        subsystems_used: list[str] = []
 
         if not normalized:
             return PantheonResult(response="Apollo is ready.", audit_id=audit_id)
@@ -61,8 +67,29 @@ class PantheonReasoner:
             return PantheonResult(
                 response=f"Olympus is unavailable right now: {result.get('error', 'unknown error')}",
                 tools_used=tools_used,
+                actions_taken=actions_taken,
+                actions_proposed=actions_proposed,
+                provider_used=provider_used,
+                model_used=model_used,
+                grounded=grounded,
+                degraded=degraded,
+                degraded_reason=degraded_reason,
+                latency_ms=latency_ms,
                 audit_id=audit_id,
             )
+            save_request_trace(
+                audit_id=audit_id,
+                channel=channel,
+                message=normalized,
+                provider_used=provider_used or None,
+                model_name=model_used or None,
+                grounded=grounded,
+                degraded=degraded,
+                latency_ms=latency_ms,
+                subsystems=subsystems_used,
+                error_reason=degraded_reason or None,
+            )
+            return result
 
         if any(token in lower for token in ("spending", "spent this", "expenses")):
             period = "month"
@@ -118,20 +145,17 @@ class PantheonReasoner:
         if any(token in lower for token in ("run my journal cycle", "run meridian", "run maridian")):
             if not self._write_allowed("trigger_meridian_cycle", approval_scope):
                 actions_proposed.append("trigger_meridian_cycle")
-                return PantheonResult(
-                    response="I can run the Maridian cycle, but I need your approval first.",
-                    actions_proposed=actions_proposed,
-                    audit_id=audit_id,
+                return finish(
+                    "I can run the Maridian cycle, but I need your approval first.",
+                    grounded=True,
                 )
             tools_used.append("trigger_meridian_cycle")
             actions_taken.append("trigger_meridian_cycle")
             result = self.connectors.run_meridian_cycle()
             if result.get("success"):
-                return PantheonResult(
-                    response="Maridian cycle triggered successfully.",
-                    tools_used=tools_used,
-                    actions_taken=actions_taken,
-                    audit_id=audit_id,
+                return finish(
+                    "Maridian cycle triggered successfully.",
+                    grounded=True,
                 )
             return PantheonResult(
                 response=f"I tried to run the Maridian cycle, but it failed: {result.get('error') or result.get('stderr') or 'unknown error'}",
@@ -153,73 +177,66 @@ class PantheonReasoner:
 
         journal_content = self._extract_after_prefix(normalized, ["journal:", "log this:", "note:"])
         if journal_content:
+            subsystems_used.append("maridian")
             if not self._write_allowed("log_journal_entry", approval_scope):
                 actions_proposed.append("log_journal_entry")
-                return PantheonResult(
-                    response="I can write that to Maridian, but I need your approval first.",
-                    actions_proposed=actions_proposed,
-                    audit_id=audit_id,
+                return finish(
+                    "I can write that to Maridian, but I need your approval first.",
+                    grounded=True,
                 )
             tools_used.append("log_journal_entry")
             actions_taken.append("log_journal_entry")
             result = self.connectors.write_journal(journal_content)
             if result.get("success"):
                 sources.append({"system": "maridian", "type": "daily_note", "path": result.get("path")})
-                return PantheonResult(
-                    response="Logged that to today's Maridian note.",
-                    tools_used=tools_used,
-                    actions_taken=actions_taken,
-                    sources=sources,
-                    audit_id=audit_id,
+                return finish(
+                    "Logged that to today's Maridian note.",
+                    grounded=True,
                 )
 
         if lower.startswith("decision:"):
             decision_text = normalized.split(":", 1)[1].strip()
             if not self._write_allowed("log_decision", approval_scope):
                 actions_proposed.append("log_decision")
-                return PantheonResult(
-                    response="I can log that decision, but I need your approval first.",
-                    actions_proposed=actions_proposed,
-                    audit_id=audit_id,
+                return finish(
+                    "I can log that decision, but I need your approval first.",
+                    grounded=True,
                 )
             tools_used.append("log_decision")
             actions_taken.append("log_decision")
             decision, reasoning = self._split_decision_reasoning(decision_text)
             self.connectors.record_decision(decision, reasoning, "general")
-            return PantheonResult(
+            return finish(
                 response=f"Logged your decision: {decision}.",
-                tools_used=tools_used,
-                actions_taken=actions_taken,
-                audit_id=audit_id,
+                grounded=True,
             )
 
         expense_match = self._parse_expense(normalized)
         if expense_match:
+            subsystems_used.append("blackbook")
             if not self._write_allowed("add_expense", approval_scope):
                 actions_proposed.append("add_expense")
-                return PantheonResult(
-                    response="I can log that expense, but I need your approval first.",
-                    actions_proposed=actions_proposed,
-                    audit_id=audit_id,
+                return finish(
+                    "I can log that expense, but I need your approval first.",
+                    grounded=True,
                 )
             tools_used.append("add_expense")
             actions_taken.append("add_expense")
             result = self.connectors.record_expense(**expense_match)
             if result.get("success"):
-                return PantheonResult(
+                return finish(
                     response=(
                         f"Recorded ${expense_match['amount']:.2f} for {expense_match['description']} "
                         f"under {expense_match['category']} from {expense_match['account']}."
                     ),
-                    tools_used=tools_used,
-                    actions_taken=actions_taken,
-                    audit_id=audit_id,
+                    grounded=True,
                 )
-            return PantheonResult(
-                response=f"I couldn't record that expense: {result.get('error', 'unknown error')}",
-                tools_used=tools_used,
-                actions_taken=actions_taken,
-                audit_id=audit_id,
+            reason = result.get("error", "unknown error")
+            return finish(
+                response=f"I couldn't record that expense: {reason}",
+                grounded=True,
+                degraded=True,
+                degraded_reason=str(reason),
             )
 
         if any(token in lower for token in ("search maridian", "search meridian", "what did i journal")):
@@ -230,34 +247,32 @@ class PantheonReasoner:
                     break
             query = query or normalized
             tools_used.append("search_meridian")
+            subsystems_used.append("maridian")
             results = self.connectors.search_meridian(query, n_results=3)
             if results:
                 sources.extend({"system": "maridian", "type": "search_hit", "path": item.get("path")} for item in results)
                 preview = " ".join(
                     f"{item['source']}: {item['content'][:140].strip()}..." for item in results[:3]
                 )
-                return PantheonResult(
+                return finish(
                     response=f"I found relevant Maridian context for '{query}'. {preview}",
-                    tools_used=tools_used,
-                    sources=sources,
-                    audit_id=audit_id,
+                    grounded=True,
                 )
-            return PantheonResult(
+            return finish(
                 response=f"I couldn't find anything relevant in Maridian for '{query}'.",
-                tools_used=tools_used,
-                audit_id=audit_id,
+                grounded=True,
+                degraded=True,
+                degraded_reason="No Maridian search matches were found.",
             )
 
         context = self._build_context(normalized, conversation_history or [], explicit_write)
         generated = self.runtime.generate(SYSTEM_PROMPT, context) if self.runtime.available() else None
         if generated:
-            return PantheonResult(
-                response=generated,
-                sources=sources,
-                tools_used=tools_used + (["local_model"] if "local_model" not in tools_used else []),
-                actions_taken=actions_taken,
-                actions_proposed=actions_proposed,
-                audit_id=audit_id,
+            return finish(
+                response=generated.content,
+                provider_used=generated.provider,
+                model_used=generated.model,
+                grounded=bool(subsystems_used or sources),
             )
 
         return PantheonResult(
@@ -268,6 +283,9 @@ class PantheonReasoner:
             actions_proposed=actions_proposed,
             audit_id=audit_id,
         )
+
+    def doctor(self) -> dict:
+        return self.connectors.doctor(self.runtime.diagnostics())
 
     def _build_context(self, message: str, history: list, explicit_write: bool) -> str:
         payload = {

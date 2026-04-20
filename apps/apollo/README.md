@@ -61,7 +61,7 @@ This package now contains:
 - `reasoning.py`
   Current Pantheon request interpretation and orchestration logic
 - `runtime.py`
-  Local model runtime wrapper, currently Ollama-oriented
+  Provider gateway for Anthropic-first reasoning with Ollama fallback
 - `connectors.py`
   Lazy connector bridge into Apollo's surrounding systems
 - `models.py`
@@ -158,12 +158,18 @@ Apollo currently depends on:
 - SQLite for local Apollo memory
 - ChromaDB for semantic indexing
 - `faster-whisper` for local transcription
+- `anthropic` for the current primary reasoning path
 - Node.js for the WhatsApp bridge
 - BlackBook's Neon-backed database for financial data
 - Maridian's vault/code for reflective memory and cycles
-- an Olympus status export for trading state
+- either local Olympus artifacts or a private Olympus API for trading state
 
-Pantheon local model support is now wired toward Ollama, but whether Apollo actually uses local inference depends on Ollama being available on the runtime machine.
+Pantheon now prefers Anthropic for open-ended reasoning and can fall back to Ollama when Anthropic is unavailable or when local runtime becomes the primary host later.
+
+Current Pantheon-specific endpoints now also include:
+
+- `/pantheon/doctor` for provider and subsystem health
+- `/reason` metadata for provider, grounding, degraded-state, and latency details
 
 ## System Boundaries
 

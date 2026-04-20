@@ -84,6 +84,12 @@ class ReasonResponse(BaseModel):
     tools_used: list[str]
     actions_taken: list[str]
     actions_proposed: list[str]
+    provider_used: str
+    model_used: str
+    grounded: bool
+    degraded: bool
+    degraded_reason: str
+    latency_ms: int | None = None
     audit_id: str
 
 

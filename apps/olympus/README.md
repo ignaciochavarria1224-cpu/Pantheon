@@ -26,6 +26,19 @@ The phase-gate entrypoint.
 
 This script performs a structured startup validation across settings, logging, Alpaca connectivity, market data access, normalization, cache behavior, and scheduler behavior. It is the quickest way to confirm a fresh machine is wired correctly before running the live loop.
 
+### `api.py`
+The read-only Olympus service API.
+
+This exposes Olympus state to the rest of Pantheon without granting execution controls. It is intended to run on the always-on PC so Apollo on other devices can read Olympus through a private network path such as Tailscale.
+
+Current endpoints:
+
+- `/health`
+- `/summary`
+- `/trades`
+- `/cycle/latest`
+- `/report/latest`
+
 ### `run_live.py`
 The continuous paper-trading runtime.
 
@@ -109,6 +122,7 @@ That means the broader stack should rely on Olympus for:
 - runtime health for the market-facing system
 
 Apollo already includes an Olympus connector, but that connector currently reads exported runtime status rather than directly invoking Olympus code in-process. The code in this folder is the system behind that boundary.
+The new read-only API allows Pantheon to read that same truth from another machine without copying the live runtime into Apollo.
 
 ## Current State Of Olympus
 
@@ -173,6 +187,8 @@ Runtime data is intentionally excluded from Git. On a working machine, Olympus w
 - JSON trade records
 - `olympus.db`
 - generated daily reports and performance logs
+
+When the Olympus API is used, these same local artifacts remain the source of truth; the API only exposes them read-only.
 
 ## Quick Start
 

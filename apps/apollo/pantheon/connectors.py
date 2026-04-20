@@ -3,6 +3,7 @@ from core.memory import (
     get_approval_rule,
     get_decisions,
     get_recent_conversations,
+    get_recent_traces,
     log_decision,
     set_approval_rule,
 )
@@ -12,6 +13,9 @@ from pantheon.services import blackbook, maridian, olympus
 class PantheonConnectors:
     def recent_memory(self, limit: int = 8) -> list[dict]:
         return get_recent_conversations(limit=limit)
+
+    def recent_traces(self, limit: int = 12) -> list[dict]:
+        return get_recent_traces(limit=limit)
 
     def decisions(self, limit: int = 8) -> list[dict]:
         return get_decisions(limit=limit)
