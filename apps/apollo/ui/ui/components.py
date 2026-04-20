@@ -360,7 +360,25 @@ def pantheon_subnav() -> rx.Component:
 
 
 def balance_row(item: BalanceItem) -> rx.Component:
-    return list_row(item.name, item.account_type, item.balance)
+    return rx.hstack(
+        rx.vstack(
+            rx.text(item.name, color=GRAPHITE, font_size="14px", font_weight="600"),
+            rx.text(item.account_type, color=TEXT_MUTED, font_size="11px", text_transform="capitalize"),
+            spacing="0",
+            align="start",
+        ),
+        rx.spacer(),
+        rx.text(
+            item.balance,
+            color=rx.cond(item.is_debt, ACCENT_NEG, ACCENT_POS),
+            font_size="15px",
+            font_weight="600",
+        ),
+        width="100%",
+        align="center",
+        padding_y="10px",
+        border_bottom=f"1px solid {BORDER}",
+    )
 
 
 def transaction_row(item: TransactionItem) -> rx.Component:
@@ -800,12 +818,23 @@ def blackbook_subnav() -> rx.Component:
 def accounts_section() -> rx.Component:
     return rx.vstack(
         rx.box(
-            metric_card("Net Worth", State.net_worth, "Live from BlackBook"),
-            metric_card("Total Assets", State.total_assets),
-            metric_card("Total Debt", State.total_debt),
+            metric_card("Daily Food Left", State.daily_food_left),
+            metric_card("Weekly Food Left", State.weekly_food_left),
+            metric_card("Net Worth", State.net_worth),
+            metric_card("Runway", rx.hstack(State.runway_days, rx.text("days", font_size="14px", color=TEXT_MUTED, align_self="flex-end"), spacing="1")),
             display="grid",
-            grid_template_columns=["1fr", "repeat(3, 1fr)"],
-            gap="16px",
+            grid_template_columns=["1fr 1fr", "repeat(4, 1fr)"],
+            gap="14px",
+            width="100%",
+        ),
+        rx.box(
+            metric_card("Total Debt", State.total_debt),
+            metric_card("Lifetime Surplus", State.lifetime_surplus),
+            metric_card("Daily Burn", State.daily_burn),
+            metric_card("Txns Today", State.txns_today),
+            display="grid",
+            grid_template_columns=["1fr 1fr", "repeat(4, 1fr)"],
+            gap="14px",
             width="100%",
         ),
         rx.box(

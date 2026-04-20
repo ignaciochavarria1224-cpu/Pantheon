@@ -6,11 +6,17 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from config import MARIDIAN_APP_PATH
+from config import MARIDIAN_APP_PATH, MERIDIAN_VAULT_PATH, MERIDIAN_STATE_PATH
 
 
 def _root() -> Path:
+    """Code location (apps/maridian inside Pantheon)."""
     return Path(MARIDIAN_APP_PATH)
+
+
+def _vault() -> Path:
+    """Data location (Dropbox/Maridian — wiki, raw, vault_state.json)."""
+    return Path(MERIDIAN_VAULT_PATH)
 
 
 def _read_json(path: Path, default: Any):
@@ -23,12 +29,12 @@ def _read_json(path: Path, default: Any):
 
 
 def _question_payload() -> dict[str, Any]:
-    today_file = _root() / "Questions" / f"{date.today().isoformat()}.md"
+    today_file = _vault() / "Questions" / f"{date.today().isoformat()}.md"
     return _read_json(today_file, {"questions": [], "source_file": str(today_file)})
 
 
 def _wiki_pages(limit: int = 6) -> list[dict[str, Any]]:
-    wiki_dir = _root() / "wiki"
+    wiki_dir = _vault() / "wiki"
     if not wiki_dir.exists():
         return []
     pages = []
@@ -51,17 +57,17 @@ def _wiki_pages(limit: int = 6) -> list[dict[str, Any]]:
 
 def get_snapshot() -> dict[str, Any]:
     try:
-        root = _root()
-        state = _read_json(root / "vault_state.json", {})
+        vault = _vault()
+        state = _read_json(vault / "vault_state.json", {})
         questions = _question_payload()
-        index_path = root / "wiki" / "INDEX.md"
+        index_path = vault / "wiki" / "INDEX.md"
         index_excerpt = ""
         if index_path.exists():
             index_excerpt = " ".join(index_path.read_text(encoding="utf-8").split())[:280]
 
         return {
-            "connected": root.exists(),
-            "locked": (root / ".evolve.lock").exists(),
+            "connected": vault.exists(),
+            "locked": (vault / ".evolve.lock").exists(),
             "state": state,
             "today_questions": questions.get("questions", []),
             "today_question_file": questions.get("source_file", ""),
@@ -88,11 +94,14 @@ def get_snapshot() -> dict[str, Any]:
 
 
 def run_cycle() -> dict[str, Any]:
-    root = _root()
+    vault = _vault()  # run from data dir so relative paths (wiki/, raw/) work
+    evolve_script = _root() / "evolve.py"
+    if not evolve_script.exists():
+        evolve_script = vault / "evolve.py"
     try:
         result = subprocess.run(
-            ["python", "evolve.py", "evolve"],
-            cwd=str(root),
+            ["python", str(evolve_script), "evolve"],
+            cwd=str(vault),
             capture_output=True,
             text=True,
             timeout=300,

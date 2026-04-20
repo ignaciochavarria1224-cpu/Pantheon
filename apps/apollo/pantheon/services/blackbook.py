@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,28 +19,89 @@ def _queries():
     return queries
 
 
+def _db() -> sqlite3.Connection:
+    conn = sqlite3.connect(BLACKBOOK_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _compute_dashboard_metrics(balances: list[dict], all_txns: list[dict], settings: dict) -> dict:
+    today = date.today().isoformat()
+    today_txns = [t for t in all_txns if t.get("date", "") == today]
+
+    daily_food_budget = float(settings.get("daily_food_budget", 30))
+    pay_period_days = int(settings.get("pay_period_days", 14))
+
+    food_today = sum(float(t["amount"]) for t in today_txns if t.get("category") == "Food" and t.get("type") == "expense")
+    food_this_week = sum(
+        float(t["amount"]) for t in all_txns
+        if t.get("category") == "Food" and t.get("type") == "expense"
+        and t.get("date", "") >= _week_start()
+    )
+    weekly_food_budget = daily_food_budget * 7
+
+    total_income = sum(float(t["amount"]) for t in all_txns if t.get("type") == "income")
+    total_expenses = sum(float(t["amount"]) for t in all_txns if t.get("type") == "expense")
+    lifetime_surplus = round(total_income - total_expenses, 2)
+
+    liquid_balances = [b for b in balances if b.get("account_type") in ("cash", "savings") and not b.get("is_debt")]
+    liquid_total = sum(float(b["balance"]) for b in liquid_balances)
+
+    # Runway: liquid assets / (30-day expenses / 30)
+    expenses_30d = sum(
+        float(t["amount"]) for t in all_txns
+        if t.get("type") == "expense" and t.get("date", "") >= _days_ago(30)
+    )
+    daily_burn = expenses_30d / 30 if expenses_30d else 1
+    runway_days = int(liquid_total / daily_burn) if daily_burn > 0 else 0
+
+    return {
+        "daily_food_left": round(daily_food_budget - food_today, 2),
+        "weekly_food_left": round(weekly_food_budget - food_this_week, 2),
+        "daily_food_budget": daily_food_budget,
+        "weekly_food_budget": weekly_food_budget,
+        "lifetime_surplus": lifetime_surplus,
+        "runway_days": runway_days,
+        "daily_burn": round(daily_burn, 2),
+        "txns_today": len(today_txns),
+    }
+
+
+def _week_start() -> str:
+    today = date.today()
+    return (today - __import__("datetime").timedelta(days=today.weekday())).isoformat()
+
+
+def _days_ago(n: int) -> str:
+    from datetime import timedelta
+    return (date.today() - timedelta(days=n)).isoformat()
+
+
 def get_snapshot() -> dict[str, Any]:
     try:
         queries = _queries()
         accounts = queries.load_accounts()
-        transactions = queries.load_transactions(limit=200)
-        balances = queries.calculate_account_balances(accounts, queries.load_transactions(limit=5000))
+        all_txns = queries.load_transactions(limit=5000)
+        balances = queries.calculate_account_balances(accounts, all_txns)
         reports = queries.load_daily_reports(limit=3)
         spending = queries.get_spending_summary("month")
+        settings = queries.get_settings()
 
         total_assets = sum(float(item["balance"]) for item in balances if not item["is_debt"])
         total_debt = sum(abs(float(item["balance"])) for item in balances if item["is_debt"])
+        dashboard = _compute_dashboard_metrics(balances, all_txns, settings)
 
         return {
             "connected": True,
             "accounts": accounts,
             "balances": balances,
-            "recent_transactions": transactions[:8],
+            "recent_transactions": all_txns[:8],
             "spending_month": spending[:8],
             "reports": reports,
             "net_worth": round(total_assets - total_debt, 2),
             "total_assets": round(total_assets, 2),
             "total_debt": round(total_debt, 2),
+            **dashboard,
         }
     except Exception as exc:
         return {
@@ -53,6 +115,12 @@ def get_snapshot() -> dict[str, Any]:
             "net_worth": 0,
             "total_assets": 0,
             "total_debt": 0,
+            "daily_food_left": 0,
+            "weekly_food_left": 0,
+            "lifetime_surplus": 0,
+            "runway_days": 0,
+            "daily_burn": 0,
+            "txns_today": 0,
         }
 
 

@@ -128,6 +128,13 @@ class State(rx.State):
 
     blackbook_section: str = "accounts"
 
+    daily_food_left: str = "$0.00"
+    weekly_food_left: str = "$0.00"
+    lifetime_surplus: str = "$0.00"
+    runway_days: str = "0"
+    daily_burn: str = "$0.00"
+    txns_today: str = "0"
+
     expense_amount: str = ""
     expense_description: str = ""
     expense_category: str = "Other"
@@ -312,6 +319,12 @@ class State(rx.State):
             self.net_worth = f"${float(blackbook.get('net_worth', 0) or 0):,.2f}"
             self.total_assets = f"${float(blackbook.get('total_assets', 0) or 0):,.2f}"
             self.total_debt = f"${float(blackbook.get('total_debt', 0) or 0):,.2f}"
+            self.daily_food_left = f"${float(blackbook.get('daily_food_left', 0) or 0):,.2f}"
+            self.weekly_food_left = f"${float(blackbook.get('weekly_food_left', 0) or 0):,.2f}"
+            self.lifetime_surplus = f"${float(blackbook.get('lifetime_surplus', 0) or 0):,.2f}"
+            self.runway_days = str(int(blackbook.get('runway_days', 0) or 0))
+            self.daily_burn = f"${float(blackbook.get('daily_burn', 0) or 0):,.2f}"
+            self.txns_today = str(int(blackbook.get('txns_today', 0) or 0))
             self.blackbook_balances = [
                 BalanceItem(
                     name=item.get("name", ""),
