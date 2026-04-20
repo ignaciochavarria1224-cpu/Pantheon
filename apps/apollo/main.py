@@ -18,6 +18,7 @@ from core.mind import get_vault_snapshot
 from pantheon.api import (
     get_activity_snapshot,
     get_blackbook_snapshot,
+    get_doctor_snapshot,
     get_maridian_snapshot,
     get_olympus_snapshot,
     get_overview_snapshot,
@@ -317,6 +318,11 @@ async def pantheon_olympus():
 @app.get("/pantheon/activity")
 async def pantheon_activity():
     return get_activity_snapshot(limit=12)
+
+
+@app.get("/pantheon/doctor")
+async def pantheon_doctor():
+    return get_doctor_snapshot()
 
 
 @app.get("/agents")

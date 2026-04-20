@@ -36,3 +36,7 @@ def get_olympus_snapshot() -> dict:
 
 def get_activity_snapshot(limit: int = 10) -> dict:
     return get_activity_feed(limit=limit)
+
+
+def get_doctor_snapshot() -> dict:
+    return _reasoner.doctor()
