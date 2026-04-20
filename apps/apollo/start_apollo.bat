@@ -1,21 +1,20 @@
 @echo off
-echo Starting Apollo...
+echo Starting Pantheon Apollo...
+
+set PYTHON=C:\Users\Ignac\AppData\Local\Python\bin\python.exe
+set APOLLO=C:\Users\Ignac\Dropbox\TBD\Pantheon\apps\apollo
+set UI=%APOLLO%\ui
 
 :: Start Apollo backend
-start "Apollo Backend" cmd /k "cd /d C:\Users\Ignac\Dropbox\Apollo && venv\Scripts\activate && python main.py"
+start "Apollo Backend" cmd /k "cd /d %APOLLO% && %PYTHON% -m uvicorn main:app --port 8001"
 timeout /t 4
 
-:: Start Apollo UI
-start "Apollo UI" cmd /k "cd /d C:\Users\Ignac\Dropbox\Apollo\ui && ..\venv\Scripts\reflex run"
-timeout /t 3
-
-:: Start WhatsApp bridge (requires Node.js installed)
-:: start "Apollo WhatsApp" cmd /k "cd /d C:\Users\Ignac\Dropbox\Apollo\channels\whatsapp_bridge && node index.js"
+:: Start Apollo UI (Reflex)
+start "Apollo UI" cmd /k "cd /d %UI% && %PYTHON% -m reflex run"
 
 echo.
-echo Apollo is starting...
+echo Pantheon Apollo is starting...
 echo Web UI:   http://localhost:3000
 echo API:      http://localhost:8001
 echo Health:   http://localhost:8001/health
 echo.
-echo NOTE: Edit .env with your real credentials before first use.

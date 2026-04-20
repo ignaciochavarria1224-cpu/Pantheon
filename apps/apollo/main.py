@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -24,30 +25,20 @@ from pantheon.api import (
 )
 from pantheon.services import blackbook, maridian
 
-# Initialize on startup
-initialize_database()
-clear_session_rules()
 
-
-def start_brief_scheduler_thread():
+def _start_brief_scheduler_thread():
     try:
         from agents.brief import start_brief_scheduler
-
         start_brief_scheduler()
     except Exception:
         return
 
 
-brief_thread = threading.Thread(target=start_brief_scheduler_thread, daemon=True)
-brief_thread.start()
-
-
-def start_trigger_scheduler():
+def _start_trigger_scheduler():
     try:
         import schedule
         import time
         from core.triggers import run_all_triggers
-
         schedule.every(1).hours.do(run_all_triggers)
         while True:
             schedule.run_pending()
@@ -56,10 +47,16 @@ def start_trigger_scheduler():
         return
 
 
-trigger_thread = threading.Thread(target=start_trigger_scheduler, daemon=True)
-trigger_thread.start()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    initialize_database()
+    clear_session_rules()
+    threading.Thread(target=_start_brief_scheduler_thread, daemon=True).start()
+    threading.Thread(target=_start_trigger_scheduler, daemon=True).start()
+    yield
 
-app = FastAPI(title="Apollo", version="3.0.0")
+
+app = FastAPI(title="Apollo", version="3.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
