@@ -49,6 +49,9 @@ QUEUE_PATH = str(Path(os.getenv("QUEUE_PATH", QUEUE_DIR)))
 WHATSAPP_BRIDGE_PORT = int(os.getenv("WHATSAPP_BRIDGE_PORT", "3001"))
 BRIEF_DELIVERY_TIME = os.getenv("BRIEF_DELIVERY_TIME", "07:00")
 
+# API keys
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
 # LLM settings
 PRIMARY_MODEL = os.getenv("PRIMARY_MODEL", "claude-opus-4-6")
 FAST_MODEL = os.getenv("FAST_MODEL", "claude-haiku-4-5-20251001")
