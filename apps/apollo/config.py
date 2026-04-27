@@ -23,11 +23,6 @@ BLACKBOOK_APP_PATH = Path(os.getenv("BLACKBOOK_APP_PATH", REPO_ROOT / "apps" / "
 MARIDIAN_APP_PATH = Path(os.getenv("MARIDIAN_APP_PATH", REPO_ROOT / "apps" / "maridian"))
 OLYMPUS_APP_PATH = Path(os.getenv("OLYMPUS_APP_PATH", REPO_ROOT / "apps" / "olympus"))
 
-# Shared system roots
-BLACKBOOK_APP_PATH = Path(os.getenv("BLACKBOOK_APP_PATH", REPO_ROOT / "apps" / "blackbook"))
-MARIDIAN_APP_PATH = Path(os.getenv("MARIDIAN_APP_PATH", REPO_ROOT / "apps" / "maridian"))
-OLYMPUS_APP_PATH = Path(os.getenv("OLYMPUS_APP_PATH", REPO_ROOT / "apps" / "olympus"))
-
 # System connections
 BLACK_BOOK_DB_URL = os.getenv("BLACK_BOOK_DB_URL") or os.getenv("DATABASE_URL")
 BLACKBOOK_DB_PATH = str(Path(os.getenv("BLACKBOOK_DB_PATH", DATA_DIR / "blackbook.db")))

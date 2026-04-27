@@ -304,3 +304,189 @@ def save_bb_settings(data: dict[str, Any]) -> dict[str, Any]:
         return {"success": True}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
+
+
+def set_balance_override(account_id: int, override: float | None) -> dict[str, Any]:
+    try:
+        _queries().update_account_balance_override(account_id, override)
+        return {"success": True}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+# ── Transactions ───────────────────────────────────────────────────────────────
+
+def list_transactions(limit: int = 200) -> list[dict[str, Any]]:
+    try:
+        return _queries().load_transactions(limit=limit)
+    except Exception:
+        return []
+
+
+def add_transaction(
+    tx_date: str | None,
+    description: str,
+    category: str,
+    amount: float,
+    account_name: str,
+    tx_type: str,
+    to_account_name: str | None = None,
+    notes: str = "",
+) -> dict[str, Any]:
+    queries = _queries()
+    accounts = queries.load_accounts()
+    account = next((a for a in accounts if a["name"].lower() == account_name.lower()), None)
+    if not account:
+        return {"success": False, "error": f"Account '{account_name}' not found."}
+    to_account_id = None
+    if to_account_name:
+        to_acct = next((a for a in accounts if a["name"].lower() == to_account_name.lower()), None)
+        if not to_acct:
+            return {"success": False, "error": f"Destination account '{to_account_name}' not found."}
+        to_account_id = int(to_acct["id"])
+    try:
+        queries.add_transaction(
+            tx_date=date.fromisoformat(tx_date) if tx_date else date.today(),
+            description=description,
+            category=category,
+            amount=amount,
+            account_id=int(account["id"]),
+            tx_type=tx_type,
+            to_account_id=to_account_id,
+            notes=notes,
+        )
+        return {"success": True}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def delete_transaction(tx_id: int) -> dict[str, Any]:
+    try:
+        _queries().delete_transaction(tx_id)
+        return {"success": True}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+# ── Holdings (buy/sell) ────────────────────────────────────────────────────────
+
+def add_holding(
+    symbol: str,
+    display_name: str,
+    asset_type: str,
+    account_name: str,
+    amount_invested: float,
+    quantity: float,
+    avg_price: float,
+    coingecko_id: str = "",
+) -> dict[str, Any]:
+    queries = _queries()
+    accounts = queries.load_accounts()
+    account = next((a for a in accounts if a["name"].lower() == account_name.lower()), None)
+    if not account:
+        return {"success": False, "error": f"Account '{account_name}' not found."}
+    try:
+        queries.add_holding(
+            symbol=symbol,
+            display_name=display_name,
+            asset_type=asset_type,
+            account_id=int(account["id"]),
+            amount_invested=amount_invested,
+            quantity=quantity,
+            avg_price=avg_price,
+            coingecko_id=coingecko_id,
+        )
+        return {"success": True}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def update_holding(holding_id: int, amount_invested: float, quantity: float, avg_price: float) -> dict[str, Any]:
+    try:
+        _queries().update_holding(holding_id, amount_invested, quantity, avg_price)
+        return {"success": True}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def delete_holding(holding_id: int) -> dict[str, Any]:
+    try:
+        _queries().delete_holding(holding_id)
+        return {"success": True}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+# ── Allocation snapshots ───────────────────────────────────────────────────────
+
+def list_allocation_snapshots(limit: int = 10) -> list[dict[str, Any]]:
+    try:
+        return _queries().load_allocation_snapshots(limit=limit)
+    except Exception:
+        return []
+
+
+def save_allocation_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        _queries().save_allocation_snapshot(payload)
+        return {"success": True}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+# ── Reports ────────────────────────────────────────────────────────────────────
+
+def list_daily_reports(limit: int = 30) -> list[dict[str, Any]]:
+    try:
+        return _queries().load_daily_reports(limit=limit)
+    except Exception:
+        return []
+
+
+def delete_daily_report(report_date: str) -> dict[str, Any]:
+    try:
+        _queries().delete_daily_report(report_date)
+        return {"success": True}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+# ── Agenda (financial deadlines from settings) ────────────────────────────────
+
+def get_agenda() -> dict[str, Any]:
+    settings = get_bb_settings()
+    items: list[dict[str, Any]] = []
+    today = date.today()
+
+    def _next_dom(day: int) -> str:
+        if day < 1:
+            return ""
+        try:
+            from datetime import timedelta
+            target = today.replace(day=min(day, 28))
+            if target < today:
+                month = today.month + 1
+                year = today.year + (1 if month > 12 else 0)
+                month = 1 if month > 12 else month
+                target = today.replace(year=year, month=month, day=min(day, 28))
+            return target.isoformat()
+        except Exception:
+            return ""
+
+    for key, label in (
+        ("payday_day", "Payday"),
+        ("cc_due_day", "Credit card due"),
+        ("statement_close_day", "Statement close"),
+        ("rent_due_day", "Rent due"),
+    ):
+        raw = settings.get(key)
+        if not raw:
+            continue
+        try:
+            day = int(raw)
+        except (TypeError, ValueError):
+            continue
+        items.append({"label": label, "date": _next_dom(day), "source": "settings"})
+
+    items.sort(key=lambda x: x.get("date") or "9999")
+    return {"items": items}
