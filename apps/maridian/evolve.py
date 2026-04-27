@@ -10,16 +10,17 @@ Usage:
   python evolve.py evolve    # Full cycle
   python evolve.py status    # Print vault stats
 """
+import os
 import sys
 import json
 import time
 from pathlib import Path
 from datetime import datetime
 
-VAULT_ROOT = Path(__file__).parent
+_env_vault = os.environ.get("MARIDIAN_VAULT_PATH")
+VAULT_ROOT = Path(_env_vault) if _env_vault else Path(__file__).parent
 STATE_FILE = VAULT_ROOT / "vault_state.json"
 STATE_TMP  = VAULT_ROOT / "vault_state.tmp"
-LOCK_FILE  = VAULT_ROOT / ".evolve.lock"
 WIKI_DIR   = VAULT_ROOT / "wiki"
 
 
@@ -29,16 +30,6 @@ def load_state() -> dict:
 
 def save_state(state: dict):
     STATE_FILE.write_text(json.dumps(state, indent=2))
-
-
-def acquire_lock():
-    if LOCK_FILE.exists():
-        raise RuntimeError("Meridian already running. Delete .evolve.lock to reset.")
-    LOCK_FILE.write_text(str(time.time()))
-
-
-def release_lock():
-    LOCK_FILE.unlink(missing_ok=True)
 
 
 def _get_neon_conn():
@@ -102,7 +93,6 @@ def run_evolve():
     print("  MERIDIAN — Evolution Cycle (Wiki Mode)")
     print("=" * 55)
     state = load_state()
-    acquire_lock()
     start = time.time()
     job_id = claim_pending_job()
     if job_id:
@@ -168,8 +158,6 @@ def run_evolve():
         print(f"\n[FAIL] CYCLE FAILED: {e}")
         import traceback
         traceback.print_exc()
-    finally:
-        release_lock()
 
 
 def run_status():

@@ -5,9 +5,12 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-load_dotenv(Path(__file__).parent.parent / ".env")
+if not os.environ.get("BLACKBOOK_DB_PATH"):
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).parent.parent / ".env")
+    except Exception:
+        pass
 
 BLACKBOOK_DB_PATH = os.environ.get(
     "BLACKBOOK_DB_PATH",

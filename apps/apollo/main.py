@@ -40,7 +40,9 @@ def _start_trigger_scheduler():
         import schedule
         import time
         from core.triggers import run_all_triggers
+        from pantheon.services import maridian as _maridian
         schedule.every(1).hours.do(run_all_triggers)
+        schedule.every().day.at("07:00").do(_maridian.run_cycle_async)
         while True:
             schedule.run_pending()
             time.sleep(60)
@@ -467,6 +469,19 @@ async def pantheon_maridian_run_cycle():
         "result": result,
         "snapshot": get_maridian_snapshot(),
     }
+
+
+@app.post("/pantheon/maridian/run-cycle/async")
+async def pantheon_maridian_run_cycle_async():
+    result = maridian.run_cycle_async()
+    if not result.get("success"):
+        raise HTTPException(status_code=409, detail=result.get("error", "Could not start cycle"))
+    return {"status": "started"}
+
+
+@app.get("/pantheon/maridian/cycle/status")
+async def pantheon_maridian_cycle_status():
+    return maridian.get_cycle_status()
 
 
 @app.get("/pantheon/olympus")

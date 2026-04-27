@@ -1,11 +1,13 @@
 # utils/vault.py
+import os
 import re
 import uuid
 from datetime import date
 from pathlib import Path
 import yaml
 
-VAULT_ROOT = Path(__file__).parent.parent
+_env_vault = os.environ.get("MARIDIAN_VAULT_PATH")
+VAULT_ROOT = Path(_env_vault) if _env_vault else Path(__file__).parent.parent
 
 FINAL_FOLDERS = {
     "seed":      VAULT_ROOT / "00-Seeds",

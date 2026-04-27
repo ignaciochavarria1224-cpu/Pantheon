@@ -1,11 +1,16 @@
 # utils/git_ops.py
+import os
 from pathlib import Path
 from datetime import datetime
 
-VAULT_ROOT = Path(__file__).parent.parent
+_env_vault = os.environ.get("MARIDIAN_VAULT_PATH")
+VAULT_ROOT = Path(_env_vault) if _env_vault else Path(__file__).parent.parent
 
 
 def git_commit(cycle: int, framework_count: int) -> bool:
+    if not (VAULT_ROOT / ".git").exists():
+        # Vault is not a git repo (post-migration data dir). Skip silently.
+        return True
     try:
         import git
         repo = git.Repo(VAULT_ROOT)
