@@ -5,6 +5,8 @@ from config import OLYMPUS_STATUS_PATH
 from core.audit import log
 
 def read_status() -> dict:
+    if not OLYMPUS_STATUS_PATH:
+        return {"success": False, "error": "OLYMPUS_STATUS_PATH not configured (legacy Apex drop file)."}
     path = Path(OLYMPUS_STATUS_PATH)
     if not path.exists():
         return {"success": False, "error": "Olympus status file not found. Is Apex running?"}

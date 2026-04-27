@@ -28,10 +28,8 @@ BLACK_BOOK_DB_URL = os.getenv("BLACK_BOOK_DB_URL") or os.getenv("DATABASE_URL")
 BLACKBOOK_DB_PATH = str(Path(os.getenv("BLACKBOOK_DB_PATH", DATA_DIR / "blackbook.db")))
 MERIDIAN_VAULT_PATH = os.getenv("MERIDIAN_VAULT_PATH", str(MARIDIAN_APP_PATH))
 MERIDIAN_STATE_PATH = os.getenv("MERIDIAN_STATE_PATH", str(MARIDIAN_APP_PATH / "vault_state.json"))
-OLYMPUS_DB_PATH = os.getenv("OLYMPUS_DB_PATH", str(OLYMPUS_APP_PATH / "data" / "olympus.db"))
-OLYMPUS_REPORT_PATH = os.getenv("OLYMPUS_REPORT_PATH", str(OLYMPUS_APP_PATH / "data" / "reports" / "latest.md"))
-OLYMPUS_LOG_PATH = os.getenv("OLYMPUS_LOG_PATH", str(OLYMPUS_APP_PATH / "data" / "logs" / "olympus.log"))
-OLYMPUS_STATUS_PATH = os.getenv("OLYMPUS_STATUS_PATH")
+OLYMPUS_API_URL = os.getenv("OLYMPUS_API_URL", "http://127.0.0.1:8002")
+OLYMPUS_STATUS_PATH = os.getenv("OLYMPUS_STATUS_PATH")  # legacy Apex JSON drop, optional
 APOLLO_MIND_VAULT_PATH = os.getenv("APOLLO_MIND_VAULT_PATH", str(MIND_VAULT_DIR))
 
 # Apollo internals
