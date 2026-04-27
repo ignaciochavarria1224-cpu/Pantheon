@@ -374,10 +374,63 @@ def balance_row(item: BalanceItem) -> rx.Component:
             font_size="15px",
             font_weight="600",
         ),
+        rx.button(
+            "Edit",
+            on_click=State.open_edit_balance(item.id, item.name, item.balance),
+            size="1",
+            variant="ghost",
+            color=TEXT_MUTED,
+            cursor="pointer",
+        ),
         width="100%",
         align="center",
         padding_y="10px",
         border_bottom=f"1px solid {BORDER}",
+    )
+
+
+def edit_balance_modal() -> rx.Component:
+    return rx.cond(
+        State.show_edit_balance,
+        rx.box(
+            rx.box(
+                rx.hstack(
+                    rx.text(f"Edit Balance — ", color=TEXT_MUTED, font_size="13px"),
+                    rx.text(State.edit_balance_name, color=GRAPHITE, font_size="13px", font_weight="600"),
+                    spacing="1",
+                ),
+                rx.input(
+                    value=State.edit_balance_value,
+                    on_change=State.set_edit_balance_value,
+                    placeholder="0.00",
+                    type="number",
+                    width="100%",
+                    margin_y="12px",
+                ),
+                rx.hstack(
+                    rx.button("Cancel", on_click=State.close_edit_balance, variant="ghost", color=TEXT_MUTED),
+                    rx.button("Save", on_click=State.save_balance_override, color_scheme="grass"),
+                    justify="end",
+                    width="100%",
+                ),
+                background=SURFACE_STRONG,
+                border=f"1px solid {BORDER_STRONG}",
+                border_radius="12px",
+                padding="24px",
+                width="320px",
+            ),
+            position="fixed",
+            top="0",
+            left="0",
+            width="100vw",
+            height="100vh",
+            display="flex",
+            align_items="center",
+            justify_content="center",
+            background="rgba(0,0,0,0.4)",
+            z_index="100",
+            on_click=State.close_edit_balance,
+        ),
     )
 
 
@@ -406,6 +459,14 @@ def audit_row(item: AuditItem) -> rx.Component:
         rx.cond(item.system != "", item.system, "SYSTEM"),
         item.timestamp,
         rx.cond(item.detail != "", item.action + " - " + item.detail, item.action),
+    )
+
+
+def trace_row(item: AuditItem) -> rx.Component:
+    return list_row(
+        rx.cond(item.system != "", item.system, "PANTHEON"),
+        item.timestamp,
+        rx.cond(item.detail != "", item.action + " — " + item.detail, item.action),
     )
 
 
@@ -1190,6 +1251,11 @@ def maridian_panel() -> rx.Component:
             "Context",
             rx.text(State.maridian_index_excerpt, color=TEXT_SOFT, font_size="13px", line_height="1.8", white_space="pre-wrap"),
         ),
+        section(
+            "Journal",
+            "Maridian entries",
+            journal_panel(),
+        ),
         wrap="wrap",
         gap="20px",
         width="100%",
@@ -1361,6 +1427,7 @@ def dashboard_layout() -> rx.Component:
             z_index="1",
         ),
         toast(),
+        edit_balance_modal(),
         min_height="100vh",
         background=BG,
         position="relative",

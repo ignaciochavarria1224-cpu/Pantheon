@@ -34,6 +34,42 @@ class PantheonReasoner:
         if not normalized:
             return PantheonResult(response="Apollo is ready.", audit_id=audit_id)
 
+        def finish(
+            response: str,
+            grounded: bool = False,
+            degraded: bool = False,
+            degraded_reason: str = "",
+            provider_used: str = "",
+            model_used: str = "",
+        ) -> PantheonResult:
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            save_request_trace(
+                audit_id=audit_id,
+                channel=channel,
+                message=normalized,
+                provider_used=provider_used or None,
+                model_name=model_used or None,
+                grounded=grounded,
+                degraded=degraded,
+                latency_ms=latency_ms,
+                subsystems=subsystems_used,
+                error_reason=degraded_reason or None,
+            )
+            return PantheonResult(
+                response=response,
+                sources=sources,
+                tools_used=tools_used,
+                actions_taken=actions_taken,
+                actions_proposed=actions_proposed,
+                provider_used=provider_used,
+                model_used=model_used,
+                grounded=grounded,
+                degraded=degraded,
+                degraded_reason=degraded_reason,
+                latency_ms=latency_ms,
+                audit_id=audit_id,
+            )
+
         lower = normalized.lower()
         approval_scope = self._approval_phrase(lower)
         explicit_write = self._is_write_request(lower)
@@ -64,32 +100,11 @@ class PantheonReasoner:
                     f"{latest_trade}"
                 )
                 return PantheonResult(response=response, tools_used=tools_used, sources=sources, audit_id=audit_id)
-            return PantheonResult(
+            return finish(
                 response=f"Olympus is unavailable right now: {result.get('error', 'unknown error')}",
-                tools_used=tools_used,
-                actions_taken=actions_taken,
-                actions_proposed=actions_proposed,
-                provider_used=provider_used,
-                model_used=model_used,
-                grounded=grounded,
-                degraded=degraded,
-                degraded_reason=degraded_reason,
-                latency_ms=latency_ms,
-                audit_id=audit_id,
+                degraded=True,
+                degraded_reason=result.get("error", "unknown error"),
             )
-            save_request_trace(
-                audit_id=audit_id,
-                channel=channel,
-                message=normalized,
-                provider_used=provider_used or None,
-                model_name=model_used or None,
-                grounded=grounded,
-                degraded=degraded,
-                latency_ms=latency_ms,
-                subsystems=subsystems_used,
-                error_reason=degraded_reason or None,
-            )
-            return result
 
         if any(token in lower for token in ("spending", "spent this", "expenses")):
             period = "month"
@@ -285,21 +300,57 @@ class PantheonReasoner:
         )
 
     def doctor(self) -> dict:
-        return self.connectors.doctor(self.runtime.diagnostics())
+        return self.runtime.diagnostics()
 
     def _build_context(self, message: str, history: list, explicit_write: bool) -> str:
-        payload = {
-            "message": message,
-            "recent_history": history[-6:],
-            "recent_memory": self.connectors.recent_memory(limit=4),
-            "recent_decisions": self.connectors.decisions(limit=3),
-            "active_patterns": self.connectors.patterns()[:3],
-            "blackbook": self.connectors.blackbook_snapshot(),
-            "maridian": self.connectors.maridian_snapshot(),
-            "olympus": self.connectors.olympus_snapshot(),
-            "write_request": explicit_write,
-        }
-        return json.dumps(payload, ensure_ascii=True, default=str)
+        lines: list[str] = [f"USER: {message}"]
+
+        if history:
+            for turn in history[-2:]:
+                role = turn.get("role", "").upper()
+                content = str(turn.get("content", ""))[:200]
+                lines.append(f"{role}: {content}")
+
+        try:
+            balances = self.connectors.account_balances().get("data") or []
+            if balances:
+                bal_str = ", ".join(f"{b['name']} ${float(b['balance']):,.0f}" for b in balances[:4])
+                lines.append(f"ACCOUNTS: {bal_str}")
+        except Exception:
+            pass
+
+        try:
+            snap = self.connectors.maridian_snapshot()
+            lines.append(
+                f"MARIDIAN: cycle {snap.get('cycle_count', 0)}, "
+                f"{'locked' if snap.get('locked') else 'idle'}, "
+                f"last {snap.get('last_cycle') or 'never'}"
+            )
+        except Exception:
+            pass
+
+        try:
+            o = self.connectors.olympus_snapshot()
+            if o.get("connected"):
+                perf = o.get("performance") or {}
+                lines.append(
+                    f"OLYMPUS: {perf.get('total_trades', 0)} trades, "
+                    f"PnL {perf.get('total_pnl', 0)}, avg R {perf.get('avg_r_multiple', 0)}"
+                )
+        except Exception:
+            pass
+
+        try:
+            decisions = self.connectors.decisions(limit=2)
+            if decisions:
+                lines.append("DECISIONS: " + "; ".join(d.get("decision", "")[:80] for d in decisions))
+        except Exception:
+            pass
+
+        if explicit_write:
+            lines.append("NOTE: user is requesting a write/action.")
+
+        return "\n".join(lines)
 
     def _fallback_response(self, message: str) -> str:
         return (

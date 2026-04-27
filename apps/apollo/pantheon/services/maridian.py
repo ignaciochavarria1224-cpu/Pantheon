@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -100,7 +101,7 @@ def run_cycle() -> dict[str, Any]:
         evolve_script = vault / "evolve.py"
     try:
         result = subprocess.run(
-            ["python", str(evolve_script), "evolve"],
+            [sys.executable, str(evolve_script), "evolve"],
             cwd=str(vault),
             capture_output=True,
             text=True,

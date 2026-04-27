@@ -17,6 +17,7 @@ class Message(BaseModel):
 
 
 class BalanceItem(BaseModel):
+    id: int = 0
     name: str
     balance: str
     account_type: str = ""
@@ -114,6 +115,18 @@ class State(rx.State):
     blackbook_status: str = "Unknown"
     maridian_status: str = "Unknown"
     olympus_status: str = "Unknown"
+    doctor_current_provider: str = "Unknown"
+    doctor_preferred_provider: str = "Unknown"
+    doctor_blackbook_reason: str = ""
+    doctor_maridian_reason: str = ""
+    doctor_olympus_reason: str = ""
+    anthropic_status: str = "Unknown"
+    anthropic_model: str = ""
+    anthropic_reason: str = ""
+    ollama_status: str = "Unknown"
+    ollama_model: str = ""
+    ollama_reason: str = ""
+    trace_items: List[AuditItem] = []
 
     self_model_excerpt: str = "Vault self-model loading..."
 
@@ -143,6 +156,11 @@ class State(rx.State):
     income_amount: str = ""
     income_description: str = ""
     income_account: str = ""
+
+    edit_balance_account_id: int = 0
+    edit_balance_name: str = ""
+    edit_balance_value: str = ""
+    show_edit_balance: bool = False
 
     holdings: List[HoldingItem] = []
     portfolio_value: str = "$0.00"
@@ -240,6 +258,34 @@ class State(rx.State):
     def set_income_account(self, value: str):
         self.income_account = value
 
+    def open_edit_balance(self, account_id: int, name: str, balance: str):
+        self.edit_balance_account_id = account_id
+        self.edit_balance_name = name
+        self.edit_balance_value = balance.lstrip("$").replace(",", "")
+        self.show_edit_balance = True
+
+    def close_edit_balance(self):
+        self.show_edit_balance = False
+        self.edit_balance_value = ""
+
+    def set_edit_balance_value(self, value: str):
+        self.edit_balance_value = value
+
+    def save_balance_override(self):
+        if not self.edit_balance_account_id:
+            return
+        try:
+            requests.post(
+                f"{APOLLO_API}/pantheon/blackbook/accounts/{self.edit_balance_account_id}/balance",
+                json={"override": float(self.edit_balance_value or "0")},
+                timeout=10,
+            ).raise_for_status()
+            self.show_toast(f"{self.edit_balance_name} balance updated.", "success")
+        except Exception as exc:
+            self.show_toast(f"Failed: {exc}", "error")
+        self.show_edit_balance = False
+        return State.refresh_context
+
     def show_bb_accounts(self):
         self.blackbook_section = "accounts"
 
@@ -310,6 +356,24 @@ class State(rx.State):
             self.blackbook_status = health.get("blackbook", "unknown").title()
             self.maridian_status = health.get("maridian", "unknown").title()
             self.olympus_status = health.get("olympus", "unknown").title()
+
+            try:
+                doctor = requests.get(f"{APOLLO_API}/pantheon/doctor", timeout=5).json()
+                self.doctor_current_provider = doctor.get("current_provider", "none").title()
+                self.doctor_preferred_provider = doctor.get("preferred_provider", "unknown").title()
+                anth = doctor.get("anthropic") or {}
+                self.anthropic_status = "Available" if anth.get("available") else "Unavailable"
+                self.anthropic_model = anth.get("model", "")
+                self.anthropic_reason = anth.get("reason", "")
+                oll = doctor.get("ollama") or {}
+                self.ollama_status = "Available" if oll.get("available") else "Unavailable"
+                self.ollama_model = oll.get("model", "")
+                self.ollama_reason = oll.get("reason", "")
+                self.doctor_blackbook_reason = health.get("blackbook_reason", "")
+                self.doctor_maridian_reason = health.get("maridian_reason", "")
+                self.doctor_olympus_reason = health.get("olympus_reason", "")
+            except Exception:
+                pass
             self.latest_signal = overview.get("latest_signal", "No recent system activity.")
             self.self_model_excerpt = overview.get("vault", {}).get(
                 "self_model_excerpt",
@@ -327,6 +391,7 @@ class State(rx.State):
             self.txns_today = str(int(blackbook.get('txns_today', 0) or 0))
             self.blackbook_balances = [
                 BalanceItem(
+                    id=int(item.get("id") or 0),
                     name=item.get("name", ""),
                     balance=f"${float(item.get('balance', 0) or 0):,.2f}",
                     account_type=item.get("account_type", ""),
@@ -422,6 +487,7 @@ class State(rx.State):
                 )
                 for item in activity.get("audit", [])[:10]
             ]
+            self.trace_items = self.audit_items[:8]
 
             try:
                 holdings_data = requests.get(f"{APOLLO_API}/pantheon/blackbook/holdings", timeout=10).json()
@@ -551,7 +617,7 @@ class State(rx.State):
             response = requests.post(
                 f"{APOLLO_API}/chat",
                 json={"message": user_msg, "channel": "ui"},
-                timeout=60,
+                timeout=180,
             )
             data = response.json()
             self.messages.append(
