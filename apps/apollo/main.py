@@ -42,7 +42,7 @@ def _start_trigger_scheduler():
         from core.triggers import run_all_triggers
         from pantheon.services import maridian as _maridian
         schedule.every(1).hours.do(run_all_triggers)
-        schedule.every().day.at("07:00").do(_maridian.run_cycle_async)
+        schedule.every().day.at("06:00").do(_maridian.run_cycle_async)
         while True:
             schedule.run_pending()
             time.sleep(60)
