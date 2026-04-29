@@ -16,6 +16,14 @@ logger = get_logger(__name__)
 
 # schema.sql lives alongside this file
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+_REFRESHABLE_VIEWS = (
+    "v_trades_full",
+    "v_trades_enriched",
+    "v_symbol_performance",
+    "v_exit_reason_stats",
+    "v_rolling_7day",
+    "v_feature_buckets",
+)
 
 
 class Database:
@@ -79,12 +87,27 @@ class Database:
         # quirks (executescript does implicit COMMIT and disables isolation level).
         with self._lock:
             statements = [s.strip() for s in schema_sql.split(";") if s.strip()]
-            for stmt in statements:
+            view_statements = [
+                stmt for stmt in statements
+                if "CREATE VIEW IF NOT EXISTS" in stmt.upper()
+            ]
+            base_statements = [
+                stmt for stmt in statements
+                if "CREATE VIEW IF NOT EXISTS" not in stmt.upper()
+            ]
+            for stmt in base_statements:
                 try:
                     conn.execute(stmt)
                 except sqlite3.OperationalError as exc:
                     # IF NOT EXISTS guards handle most cases; log unexpected errors
                     logger.warning("Schema statement warning: %s | stmt=%.60s", exc, stmt)
+            for view_name in _REFRESHABLE_VIEWS:
+                conn.execute(f"DROP VIEW IF EXISTS {view_name}")
+            for stmt in view_statements:
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError as exc:
+                    logger.warning("View refresh warning: %s | stmt=%.60s", exc, stmt)
             conn.commit()
 
         # Report confirmed objects

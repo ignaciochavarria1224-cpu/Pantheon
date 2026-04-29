@@ -6,6 +6,7 @@ All methods return plain dicts or lists of dicts — no ORM objects.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Optional
 
@@ -101,6 +102,83 @@ class Repository:
             "SELECT * FROM v_trades_enriched ORDER BY entry_time DESC LIMIT ?",
             (int(limit),),
         )
+
+    # ------------------------------------------------------------------
+    # Apex reports
+    # ------------------------------------------------------------------
+
+    def get_latest_apex_report(self, report_type: str) -> Optional[dict]:
+        """Return the latest Apex report for a given type."""
+        row = self._db.query_one(
+            """
+            SELECT *
+            FROM apex_reports
+            WHERE report_type = ?
+            ORDER BY period_end DESC, generated_at DESC
+            LIMIT 1
+            """,
+            (report_type,),
+        )
+        return self._decode_apex_report(row)
+
+    def get_apex_reports(
+        self,
+        report_type: Optional[str] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+        limit: Optional[int] = None,
+    ) -> list[dict]:
+        """Return Apex reports with optional type and date filtering."""
+        clauses = []
+        params: list = []
+        if report_type is not None:
+            clauses.append("report_type = ?")
+            params.append(report_type)
+        if since is not None:
+            clauses.append("period_end >= ?")
+            params.append(since.isoformat())
+        if until is not None:
+            clauses.append("period_start <= ?")
+            params.append(until.isoformat())
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        limit_clause = f"LIMIT {int(limit)}" if limit is not None else ""
+        rows = self._db.query(
+            f"""
+            SELECT *
+            FROM apex_reports
+            {where}
+            ORDER BY period_end DESC, generated_at DESC
+            {limit_clause}
+            """,
+            tuple(params),
+        )
+        return [self._decode_apex_report(row) for row in rows]
+
+    def get_unconsumed_apex_reports(self, limit: int = 20) -> list[dict]:
+        """Return the newest reports not yet marked consumed by Pantheon."""
+        rows = self._db.query(
+            """
+            SELECT *
+            FROM apex_reports
+            WHERE consumed_by_pantheon = 0
+            ORDER BY period_end DESC, generated_at DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        )
+        return [self._decode_apex_report(row) for row in rows]
+
+    def get_latest_apex_summary_bundle(self) -> dict:
+        """Return the latest report row for each core Apex report type."""
+        bundle = {}
+        for report_type in (
+            "daily_performance",
+            "weekly_performance",
+            "risk_watch",
+            "ranking_behavior",
+        ):
+            bundle[report_type] = self.get_latest_apex_report(report_type)
+        return bundle
 
     # ------------------------------------------------------------------
     # Performance summary queries
@@ -293,3 +371,17 @@ class Repository:
             f"SELECT * FROM system_events {where} ORDER BY event_time DESC LIMIT ?",
             tuple(params),
         )
+
+    def _decode_apex_report(self, row: Optional[dict]) -> Optional[dict]:
+        if row is None:
+            return None
+        decoded = dict(row)
+        raw = decoded.get("content_json")
+        if raw:
+            try:
+                decoded["content"] = json.loads(raw)
+            except Exception:
+                decoded["content"] = None
+        else:
+            decoded["content"] = None
+        return decoded

@@ -18,11 +18,6 @@ from zoneinfo import ZoneInfo
 from core.logger import get_logger
 from core.models import Direction, LoopState, TradeRecord
 from core.scheduler import Scheduler
-from core.trading.qualification import (
-    build_symbol_trade_stats,
-    qualify_ranked_symbol,
-)
-from core.trading.regime import classify_regime
 from core.trading.risk import validate_entry
 from core.trading.sizing import calculate_size, calculate_stop_and_target
 
@@ -91,11 +86,14 @@ class PaperTradingLoop:
         self._universe = universe_manager
 
         self._completed_trades: list[TradeRecord] = []
+        self._recent_exit_by_symbol: dict[str, datetime] = {}
         self._trades_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._cycle_count = 0
         self._eod_closed_date: Optional[date] = None      # set when EOD close-all fires
         self._report_generated_date: Optional[date] = None  # set when daily report is written
+        self._apex_generated_date: Optional[date] = None
+        self._weekly_apex_generated_key: Optional[str] = None
         self._last_cycle_diagnostics: dict[str, Any] = {}
 
         self._state = LoopState(
@@ -175,7 +173,6 @@ class PaperTradingLoop:
     def _run_cycle_inner(self) -> None:
         diagnostics: dict[str, Any] = {
             "cycle_time": datetime.now(timezone.utc).isoformat(),
-            "regime": {},
             "qualification": {
                 "passed": {"long": 0, "short": 0},
                 "rejected": {},
@@ -240,6 +237,13 @@ class PaperTradingLoop:
         if now_et >= _report_trigger and self._report_generated_date != today_et:
             self._generate_daily_report(today_et)
             self._report_generated_date = today_et
+        if now_et >= _report_trigger and self._apex_generated_date != today_et:
+            weekly_key = f"{today_et.isocalendar().year}-W{today_et.isocalendar().week:02d}"
+            include_weekly = today_et.weekday() == 4 and self._weekly_apex_generated_key != weekly_key
+            if self._generate_apex_reports(today_et, include_weekly=include_weekly):
+                self._apex_generated_date = today_et
+                if include_weekly:
+                    self._weekly_apex_generated_key = weekly_key
 
         # ------------------------------------------------------------------
         # Step 2 — Get latest ranking
@@ -258,9 +262,6 @@ class PaperTradingLoop:
                 ranking_age_min, stale_threshold,
             )
             return
-
-        regime = classify_regime(ranked, self._settings)
-        diagnostics["regime"] = regime.to_dict()
 
         # ------------------------------------------------------------------
         # Step 3 — Fetch latest bars for open positions + top candidates
@@ -305,13 +306,6 @@ class PaperTradingLoop:
         # Step 6 — Evaluate rotations and exit dropped positions
         # ------------------------------------------------------------------
         rotation_threshold = int(self._settings.ROTATION_RANK_DROP_THRESHOLD)
-        if regime.name == "trend":
-            rotation_threshold += int(self._settings.REGIME_TREND_ROTATION_BUFFER)
-        elif regime.name in {"mixed", "degraded"}:
-            rotation_threshold = max(
-                1,
-                rotation_threshold - int(self._settings.REGIME_MIXED_ROTATION_PENALTY),
-            )
 
         rotation_symbols = self._position_manager.evaluate_rotations(
             ranked, threshold_override=rotation_threshold
@@ -366,11 +360,6 @@ class PaperTradingLoop:
         # ------------------------------------------------------------------
         current_open_positions = self._position_manager.get_open_positions()
         open_symbols = {p.symbol for p in current_open_positions}
-        symbol_stats = build_symbol_trade_stats(
-            self.get_completed_trades(),
-            now_utc=now_utc,
-            settings=self._settings,
-        )
 
         if ranked.scored_count < _MIN_SCORED_TO_TRADE:
             # A sparse ranking means min-max normalisation ran over too few
@@ -382,9 +371,7 @@ class PaperTradingLoop:
                 ranked.scored_count, _MIN_SCORED_TO_TRADE,
             )
             entry_candidates: list = []
-        elif not regime.allow_entries:
-            logger.info("Entries skipped — regime=%s", regime.name)
-            entry_candidates = []
+            raw_candidates: list = []
         else:
             long_candidates = [
                 rs for rs in all_longs
@@ -415,14 +402,17 @@ class PaperTradingLoop:
             current_equity = self._state.paper_equity or 100_000.0
             current_cash = self._state.paper_cash or 100_000.0
 
-        # Divide available buying power evenly across entry candidates
+        # Sizing budget is equity-based (NOT buying_power). This caps gross
+        # exposure near 1x equity and prevents margin from amplifying single
+        # bad signals. entry_candidates is populated below — this placeholder
+        # is recomputed after _build_entry_candidates runs.
         num_candidates = max(len(entry_candidates), 1)
-        per_position_budget = current_cash / num_candidates
+        per_position_budget = current_equity / num_candidates
 
         # ------------------------------------------------------------------
         # Step 8 — Fetch historical bars for ATR, then enter candidates
         # ------------------------------------------------------------------
-        candidate_symbols = [rs.symbol for rs in raw_candidates] if "raw_candidates" in locals() else []
+        candidate_symbols = [rs.symbol for rs in raw_candidates]
         hist_bars: dict[str, list[dict]] = {}
 
         if candidate_symbols:
@@ -444,21 +434,25 @@ class PaperTradingLoop:
             except Exception as exc:
                 logger.error("Historical bars fetch for ATR failed: %s", exc)
 
-        if entry_candidates == [] and "raw_candidates" not in locals():
-            pass
-        elif eod_done_today:
+        if eod_done_today:
             entry_candidates = []
-        else:
+        elif raw_candidates:
             entry_candidates = self._build_entry_candidates(
                 raw_candidates=raw_candidates,
                 latest_bars=latest_bars,
-                hist_bars=hist_bars,
-                symbol_stats=symbol_stats,
-                regime=regime,
-                now_utc=now_utc,
                 diagnostics=diagnostics,
             )
 
+        # Recompute per-candidate budget now that entry_candidates is final.
+        num_candidates = max(len(entry_candidates), 1)
+        per_position_budget = current_equity / num_candidates
+
+        # Existing gross exposure counts against the 1x-equity cap so that new
+        # entries + already-open positions together cannot exceed equity.
+        current_gross_exposure = sum(
+            abs(position.size) * (position.current_price or position.entry_price)
+            for position in self._position_manager.get_open_positions()
+        )
         reserved_capital = 0.0  # capital committed by successful orders this cycle
 
         for rs in entry_candidates:
@@ -505,13 +499,16 @@ class PaperTradingLoop:
                     )
                     continue
 
-            # Fix 1 — Available capital after orders already committed this cycle.
-            available = current_cash - reserved_capital
+            # Available capacity = 1x-equity gross-exposure cap minus what we already
+            # hold and what we've reserved earlier in this cycle.
+            available = current_equity - current_gross_exposure - reserved_capital
             if available < _MIN_POSITION_SIZE:
                 logger.warning(
-                    "Entry skipped — %s %s: available=%.2f below floor=%.2f (reserved=%.2f)",
+                    "Entry skipped — %s %s: available=%.2f below floor=%.2f "
+                    "(gross_exposure=%.2f reserved=%.2f equity=%.2f)",
                     direction.value.upper(), symbol,
-                    available, _MIN_POSITION_SIZE, reserved_capital,
+                    available, _MIN_POSITION_SIZE,
+                    current_gross_exposure, reserved_capital, current_equity,
                 )
                 continue
 
@@ -525,7 +522,7 @@ class PaperTradingLoop:
             )
 
             risk_based_size = calculate_size(
-                current_cash, entry_price, stop_price,
+                current_equity, entry_price, stop_price,
                 self._settings.MAX_RISK_PER_TRADE_PCT,
             )
             budget_capped_size = int(per_position_budget / entry_price) if entry_price > 0 else 0
@@ -558,6 +555,24 @@ class PaperTradingLoop:
             if not valid:
                 logger.debug("Entry rejected — %s %s: %s", direction.value.upper(), symbol, reason)
                 continue
+
+            # Re-entry cooldown: block same-symbol re-entry within N seconds of
+            # the last exit. Catches the intra-cycle case where the exit order
+            # fills in microseconds and the opposing entry races a still-settling
+            # fill at the broker. The pending-order check below catches the
+            # still-pending-order case; the cooldown covers the filled-but-not-
+            # settled window.
+            cooldown_seconds = int(self._settings.SYMBOL_REENTRY_COOLDOWN_SECONDS)
+            with self._trades_lock:
+                last_exit = self._recent_exit_by_symbol.get(symbol)
+            if last_exit is not None and cooldown_seconds > 0:
+                elapsed = (now_utc - last_exit).total_seconds()
+                if elapsed < cooldown_seconds:
+                    logger.warning(
+                        "Entry skipped — %s %s: re-entry cooldown (%.0fs elapsed, %ds required)",
+                        direction.value.upper(), symbol, elapsed, cooldown_seconds,
+                    )
+                    continue
 
             # Skip if a pending Alpaca order exists for this symbol.
             # The exit order from this cycle (or a previous one) may still be
@@ -601,12 +616,36 @@ class PaperTradingLoop:
 
         try:
             broker_positions = self._alpaca.get_positions()
-            local_symbols = sorted(p.symbol for p in self._position_manager.get_open_positions())
-            broker_symbols = sorted(str(p.get("symbol")) for p in broker_positions)
+            local_positions = {
+                p.symbol: {
+                    "side": p.direction.value,
+                    "qty": int(p.size),
+                }
+                for p in self._position_manager.get_open_positions()
+            }
+            broker_position_map = {
+                str(p.get("symbol")): {
+                    "side": str(p.get("side")),
+                    "qty": int(abs(float(p.get("qty", 0.0)))),
+                }
+                for p in broker_positions
+            }
+            local_symbols = sorted(local_positions)
+            broker_symbols = sorted(broker_position_map)
+            shared_symbols = set(local_positions) & set(broker_position_map)
+            quantity_or_side_mismatch = any(
+                local_positions[symbol] != broker_position_map[symbol]
+                for symbol in shared_symbols
+            )
             diagnostics["broker_state"] = {
                 "local_open_symbols": local_symbols,
                 "broker_open_symbols": broker_symbols,
-                "mismatch": local_symbols != broker_symbols,
+                "local_open_positions": local_positions,
+                "broker_open_positions": broker_position_map,
+                "mismatch": (
+                    local_symbols != broker_symbols
+                    or quantity_or_side_mismatch
+                ),
             }
         except Exception as exc:
             diagnostics["broker_state"] = {"error": str(exc)}
@@ -635,10 +674,9 @@ class PaperTradingLoop:
         # ------------------------------------------------------------------
         state = self.get_state()
         logger.info(
-            "Cycle #%d | %s | regime=%s | open=%d trades=%d daily_pnl=%.2f total_pnl=%.2f equity=%.2f",
+            "Cycle #%d | %s | open=%d trades=%d daily_pnl=%.2f total_pnl=%.2f equity=%.2f",
             state.cycle_count,
             now_utc.strftime("%H:%M:%S UTC"),
-            regime.name,
             state.open_position_count,
             state.total_trades_completed,
             state.daily_pnl,
@@ -666,63 +704,28 @@ class PaperTradingLoop:
         """Add a completed TradeRecord to the session list."""
         with self._trades_lock:
             self._completed_trades.append(record)
+            self._recent_exit_by_symbol[record.symbol] = record.exit_time
 
     def _build_entry_candidates(
         self,
         raw_candidates,
         latest_bars: dict[str, dict],
-        hist_bars: dict[str, list[dict]],
-        symbol_stats: dict[str, dict],
-        regime,
-        now_utc: datetime,
         diagnostics: dict[str, Any],
     ) -> list:
         per_side_limit = max(int(self._settings.MAX_CANDIDATES_PER_SIDE), 1)
-        qualified: dict[str, list] = {"long": [], "short": []}
+        by_side: dict[str, list] = {"long": [], "short": []}
 
         for rs in raw_candidates:
-            direction = Direction.LONG if rs.direction == "long" else Direction.SHORT
-            latest_bar = latest_bars.get(rs.symbol)
-            if latest_bar is None:
+            if latest_bars.get(rs.symbol) is None:
                 self._increment_rejection(diagnostics, "missing latest bar")
                 continue
-            entry_price = float(latest_bar["close"])
-            atr = _compute_atr(hist_bars.get(rs.symbol, []))
-            result = qualify_ranked_symbol(
-                ranked_symbol=rs,
-                direction=direction,
-                entry_price=entry_price,
-                atr=atr,
-                now_utc=now_utc,
-                symbol_stats=symbol_stats.get(rs.symbol),
-                regime=regime,
-                settings=self._settings,
-            )
-            if not result.allowed:
-                self._increment_rejection(diagnostics, result.reason)
-                continue
-            qualified[rs.direction].append(rs)
+            by_side[rs.direction].append(rs)
             diagnostics["qualification"]["passed"][rs.direction] += 1
 
-        mixed_bonus = (
-            float(self._settings.REGIME_MIXED_SCORE_BONUS)
-            if regime.name == "mixed" else 0.0
-        )
-        if mixed_bonus > 0:
-            qualified["long"] = [
-                rs for rs in qualified["long"]
-                if float(rs.features.normalized_score) >= float(self._settings.LONG_ENTRY_SCORE_THRESHOLD) + mixed_bonus
-            ]
-            qualified["short"] = [
-                rs for rs in qualified["short"]
-                if (100.0 - float(rs.features.normalized_score)) >= float(self._settings.SHORT_ENTRY_SCORE_THRESHOLD) + mixed_bonus
-            ]
+        by_side["long"].sort(key=lambda rs: float(rs.score), reverse=True)
+        by_side["short"].sort(key=lambda rs: float(rs.score))
 
-        qualified["long"].sort(key=lambda rs: float(rs.score), reverse=True)
-        qualified["short"].sort(key=lambda rs: float(rs.score))
-
-        scaled_side_limit = max(int(round(per_side_limit * regime.position_scale)), 1)
-        return qualified["long"][:scaled_side_limit] + qualified["short"][:scaled_side_limit]
+        return by_side["long"][:per_side_limit] + by_side["short"][:per_side_limit]
 
     def _increment_rejection(self, diagnostics: dict[str, Any], reason: str) -> None:
         rejected = diagnostics["qualification"]["rejected"]
@@ -810,6 +813,44 @@ class PaperTradingLoop:
                 "Daily report generation failed for %s:\n%s",
                 report_date, traceback.format_exc(),
             )
+
+    def _generate_apex_reports(self, report_date: date, include_weekly: bool = False) -> bool:
+        """
+        Generate the structured Phase 5 Apex reports for `report_date`.
+        Returns True when all requested reports were persisted, False otherwise.
+        Never raises.
+        """
+        try:
+            from core.reporting.apex_reports import ApexReportGenerator  # lazy import
+
+            generator = ApexReportGenerator()
+            results = generator.generate_daily_suite(
+                report_date=report_date,
+                include_weekly=include_weekly,
+            )
+            expected = 4 if include_weekly else 3
+            if len(results) == expected:
+                logger.info(
+                    "Apex reports generated -> %d report(s) for %s",
+                    len(results),
+                    report_date,
+                )
+                return True
+
+            logger.error(
+                "Apex report generation incomplete for %s: expected=%d actual=%d",
+                report_date,
+                expected,
+                len(results),
+            )
+            return False
+        except Exception:
+            logger.error(
+                "Apex report generation failed for %s:\n%s",
+                report_date,
+                traceback.format_exc(),
+            )
+            return False
 
     def _run_eod_close(self) -> bool:
         """
