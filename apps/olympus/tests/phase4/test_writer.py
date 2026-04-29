@@ -30,7 +30,7 @@ def mem_db():
 
 @pytest.fixture
 def writer(mem_db):
-    return MemoryWriter(mem_db)
+    return MemoryWriter(mem_db, allow_network_fallback=False)
 
 
 def _make_trade(symbol="AAPL", exit_reason="target"):
@@ -99,6 +99,35 @@ def _make_cycle():
     )
 
 
+def _insert_ranked_cycle(mem_db, cycle_ts: datetime):
+    cycle_id = str(uuid.uuid4())
+    cycle_ts_iso = cycle_ts.isoformat()
+    mem_db.execute(
+        """
+        INSERT INTO ranking_cycles (
+            cycle_id, cycle_timestamp, universe_size, scored_count,
+            error_count, duration_seconds, ingested_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (cycle_id, cycle_ts_iso, 185, 180, 5, 10.0, cycle_ts_iso),
+    )
+    mem_db.executemany(
+        """
+        INSERT INTO cycle_rankings (cycle_id, cycle_timestamp, symbol, direction, rank, score)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (cycle_id, cycle_ts_iso, "AAPL", "long", 1, 95.0),
+            (cycle_id, cycle_ts_iso, "MSFT", "long", 2, 94.0),
+            (cycle_id, cycle_ts_iso, "NVDA", "long", 3, 93.0),
+            (cycle_id, cycle_ts_iso, "NFLX", "short", 1, 40.0),
+            (cycle_id, cycle_ts_iso, "TSLA", "short", 2, 35.0),
+            (cycle_id, cycle_ts_iso, "META", "short", 3, 30.0),
+        ],
+    )
+    return cycle_id
+
+
 # ---------------------------------------------------------------------------
 # write_trade tests
 # ---------------------------------------------------------------------------
@@ -112,6 +141,7 @@ def test_write_trade_inserts_row(writer, mem_db):
     assert row is not None
     assert row["symbol"] == "AAPL"
     assert row["r_multiple"] == pytest.approx(2.5)
+    assert row["regime"] is None
 
 
 def test_write_trade_creates_stub_features(writer, mem_db):
@@ -121,7 +151,7 @@ def test_write_trade_creates_stub_features(writer, mem_db):
         "SELECT * FROM trade_features WHERE trade_id = ?", (record.trade_id,)
     )
     assert row is not None
-    assert row["roc_5"] is None  # stub — no features supplied
+    assert row["score_at_entry"] == pytest.approx(82.5)
 
 
 def test_write_trade_with_features_populates_columns(writer, mem_db):
@@ -133,7 +163,8 @@ def test_write_trade_with_features_populates_columns(writer, mem_db):
     )
     assert row is not None
     assert row["roc_5"] == pytest.approx(1.2)
-    assert row["normalized_score"] == pytest.approx(82.5)
+    assert row["score_at_entry"] == pytest.approx(82.5)
+    assert row["rvol_at_entry"] == pytest.approx(1.8)
 
 
 def test_write_trade_is_idempotent(writer, mem_db):
@@ -146,6 +177,22 @@ def test_write_trade_is_idempotent(writer, mem_db):
     assert count["n"] == 1
 
 
+def test_write_trade_links_entry_cycle_and_regime(writer, mem_db):
+    record = _make_trade()
+    cycle_id = _insert_ranked_cycle(mem_db, record.entry_time)
+
+    ok = writer.write_trade(record)
+
+    assert ok is True
+    row = mem_db.query_one(
+        "SELECT entry_cycle_id, regime FROM trades WHERE trade_id = ?",
+        (record.trade_id,),
+    )
+    assert row is not None
+    assert row["entry_cycle_id"] == cycle_id
+    assert row["regime"] == "trend_up"
+
+
 def test_write_trade_features_via_record_field(writer, mem_db):
     """Regression: features attached to TradeRecord.features flow through to DB columns."""
     features = _make_features()
@@ -153,20 +200,20 @@ def test_write_trade_features_via_record_field(writer, mem_db):
     record.features = features  # simulate the path: Position.features → TradeRecord.features
     writer.write_trade(record, features=record.features)
     row = mem_db.query_one(
-        "SELECT roc_5, roc_10, roc_20, acceleration, rvol, vwap_deviation, "
-        "range_position, raw_score, normalized_score "
+        "SELECT roc_5, roc_10, roc_20, acceleration, rvol_at_entry, vwap_deviation_at_entry, "
+        "range_position_at_entry, raw_score, score_at_entry "
         "FROM trade_features WHERE trade_id = ?",
         (record.trade_id,),
     )
     assert row is not None
     assert row["roc_5"] is not None, "roc_5 must not be NULL after fix"
     assert row["roc_5"] == pytest.approx(1.2)
-    assert row["normalized_score"] == pytest.approx(82.5)
+    assert row["score_at_entry"] == pytest.approx(82.5)
 
 
 def test_write_trade_never_raises_on_db_failure(mem_db):
     """MemoryWriter must return False (not raise) when the DB call fails."""
-    writer = MemoryWriter(mem_db)
+    writer = MemoryWriter(mem_db, allow_network_fallback=False)
     # Close the connection so all DB calls fail
     mem_db.close()
 

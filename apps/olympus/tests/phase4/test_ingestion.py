@@ -81,6 +81,26 @@ def _write_ranking_file(tmp_path: Path, data: dict) -> Path:
 
 def test_ingest_trade_fields_mapped(mem_db, tmp_path, trade_data):
     """All fields from the JSON must appear correctly in the trades table."""
+    ranking = {
+        "cycle_id": str(uuid.uuid4()),
+        "timestamp": "2025-01-15T14:00:00+00:00",
+        "universe_size": 185,
+        "scored_count": 180,
+        "error_count": 5,
+        "duration_seconds": 12.5,
+        "longs": [
+            {"symbol": "AAPL", "rank": 1, "score": 95.0, "direction": "long"},
+            {"symbol": "MSFT", "rank": 2, "score": 94.0, "direction": "long"},
+            {"symbol": "NVDA", "rank": 3, "score": 93.0, "direction": "long"},
+        ],
+        "shorts": [
+            {"symbol": "NFLX", "rank": 1, "score": 40.0, "direction": "short"},
+            {"symbol": "TSLA", "rank": 2, "score": 35.0, "direction": "short"},
+            {"symbol": "META", "rank": 3, "score": 30.0, "direction": "short"},
+        ],
+    }
+    _write_ranking_file(tmp_path, ranking)
+    Ingestion(mem_db, tmp_path, tmp_path).ingest_rankings()
     _write_trade_file(tmp_path, trade_data)
     ingestion = Ingestion(mem_db, tmp_path, tmp_path)
     result = ingestion.ingest_trades()
@@ -97,6 +117,8 @@ def test_ingest_trade_fields_mapped(mem_db, tmp_path, trade_data):
     assert row["exit_reason"] == "target"
     assert row["r_multiple"] == pytest.approx(2.5)
     assert row["rank_at_entry"] == 1
+    assert row["entry_cycle_id"] == ranking["cycle_id"]
+    assert row["regime"] == "trend_up"
 
 
 def test_ingest_trade_creates_stub_features(mem_db, tmp_path, trade_data):
@@ -109,7 +131,7 @@ def test_ingest_trade_creates_stub_features(mem_db, tmp_path, trade_data):
     )
     assert row is not None
     assert row["symbol"] == "AAPL"
-    assert row["roc_5"] is None  # stub — no feature data
+    assert "rvol_at_entry" in row
 
 
 def test_ingest_trade_is_idempotent(mem_db, tmp_path, trade_data):

@@ -98,7 +98,7 @@ class Repository:
         Used by Apex to build analysis context.
         """
         return self._db.query(
-            "SELECT * FROM v_trades_full ORDER BY entry_time DESC LIMIT ?",
+            "SELECT * FROM v_trades_enriched ORDER BY entry_time DESC LIMIT ?",
             (int(limit),),
         )
 

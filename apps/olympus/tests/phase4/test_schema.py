@@ -54,6 +54,7 @@ def test_expected_views_exist(mem_db):
     names = {r["name"] for r in rows}
     expected = {
         "v_trades_full",
+        "v_trades_enriched",
         "v_symbol_performance",
         "v_exit_reason_stats",
         "v_rolling_7day",
@@ -107,6 +108,21 @@ def test_foreign_keys_enabled(mem_db):
             VALUES ('nonexistent-id', '2025-01-01T00:00:00+00:00', 'AAPL', 'long', 1, 75.0)
             """
         )
+
+
+def test_trade_schema_has_regime_and_self_describing_feature_columns(mem_db):
+    trade_columns = {
+        row["name"] for row in mem_db.query("PRAGMA table_info(trades)")
+    }
+    feature_columns = {
+        row["name"] for row in mem_db.query("PRAGMA table_info(trade_features)")
+    }
+
+    assert "regime" in trade_columns
+    assert "rvol_at_entry" in feature_columns
+    assert "score_at_entry" in feature_columns
+    assert "range_position_at_entry" in feature_columns
+    assert "vwap_deviation_at_entry" in feature_columns
 
 
 def test_wal_journal_mode(file_db):

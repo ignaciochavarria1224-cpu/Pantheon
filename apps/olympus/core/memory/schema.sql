@@ -83,6 +83,8 @@ CREATE TABLE IF NOT EXISTS trades (
                                 ('stop', 'target', 'rotation', 'manual', 'eod_close')),
     status                  TEXT NOT NULL DEFAULT 'closed'
                             CHECK (status IN ('closed')),
+    regime                  TEXT
+                            CHECK (regime IN ('trend_up', 'trend_down', 'mixed', 'degraded')),
     rank_at_entry           INTEGER,
     score_at_entry          REAL,
     rank_at_exit            INTEGER,
@@ -110,11 +112,11 @@ CREATE TABLE IF NOT EXISTS trade_features (
     roc_10              REAL,
     roc_20              REAL,
     acceleration        REAL,
-    rvol                REAL,
-    vwap_deviation      REAL,
-    range_position      REAL,
+    rvol_at_entry       REAL,
+    vwap_deviation_at_entry REAL,
+    range_position_at_entry REAL,
     raw_score           REAL,
-    normalized_score    REAL,
+    score_at_entry      REAL,
     close_at_entry      REAL,
     volume_at_entry     REAL,
     vwap_at_entry       REAL,
@@ -196,6 +198,7 @@ CREATE INDEX IF NOT EXISTS idx_trades_exit_time ON trades(exit_time);
 CREATE INDEX IF NOT EXISTS idx_trades_direction ON trades(direction);
 CREATE INDEX IF NOT EXISTS idx_trades_exit_reason ON trades(exit_reason);
 CREATE INDEX IF NOT EXISTS idx_trades_entry_cycle_id ON trades(entry_cycle_id);
+CREATE INDEX IF NOT EXISTS idx_trades_regime ON trades(regime);
 CREATE INDEX IF NOT EXISTS idx_trades_r_multiple ON trades(r_multiple);
 CREATE INDEX IF NOT EXISTS idx_trade_features_symbol ON trade_features(symbol);
 CREATE INDEX IF NOT EXISTS idx_cycle_rankings_symbol_time
@@ -227,12 +230,42 @@ CREATE VIEW IF NOT EXISTS v_trades_full AS
 SELECT
     t.*,
     tf.roc_5, tf.roc_10, tf.roc_20, tf.acceleration,
-    tf.rvol, tf.vwap_deviation, tf.range_position,
-    tf.raw_score, tf.normalized_score,
+    tf.rvol_at_entry, tf.vwap_deviation_at_entry, tf.range_position_at_entry,
+    tf.raw_score, tf.score_at_entry AS feature_score_at_entry,
     tf.close_at_entry, tf.volume_at_entry, tf.vwap_at_entry,
     tf.atr_at_entry, tf.high_20, tf.low_20, tf.bar_count_used
 FROM trades t
 LEFT JOIN trade_features tf ON t.trade_id = tf.trade_id;
+
+CREATE VIEW IF NOT EXISTS v_trades_enriched AS
+SELECT
+    t.*,
+    tf.symbol AS feature_symbol,
+    tf.roc_5,
+    tf.roc_10,
+    tf.roc_20,
+    tf.acceleration,
+    tf.rvol_at_entry,
+    tf.score_at_entry AS feature_score_at_entry,
+    tf.range_position_at_entry,
+    tf.vwap_deviation_at_entry,
+    tf.raw_score,
+    tf.close_at_entry,
+    tf.volume_at_entry,
+    tf.vwap_at_entry,
+    tf.atr_at_entry,
+    tf.high_20,
+    tf.low_20,
+    tf.bar_count_used,
+    tf.captured_at AS feature_captured_at,
+    cr.rank AS entry_rank_from_cycle_rankings,
+    cr.score AS entry_score_from_cycle_rankings
+FROM trades t
+LEFT JOIN trade_features tf ON t.trade_id = tf.trade_id
+LEFT JOIN cycle_rankings cr
+    ON cr.cycle_id = t.entry_cycle_id
+   AND cr.symbol = t.symbol
+   AND cr.direction = t.direction;
 
 CREATE VIEW IF NOT EXISTS v_symbol_performance AS
 SELECT

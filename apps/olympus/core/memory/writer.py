@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
 from core.logger import get_logger
+from core.memory.enrichment import TradeContextEnricher
 from core.trading.loop import PaperTradingLoop
 
 if TYPE_CHECKING:
@@ -35,8 +36,16 @@ class MemoryWriter:
     - Return True on success, False on any failure
     """
 
-    def __init__(self, db: "Database") -> None:
+    def __init__(
+        self,
+        db: "Database",
+        allow_network_fallback: bool = True,
+    ) -> None:
         self._db = db
+        self._enricher = TradeContextEnricher(
+            db,
+            allow_network_fallback=allow_network_fallback,
+        )
         logger.info("MemoryWriter initialized")
 
     # ------------------------------------------------------------------
@@ -57,6 +66,8 @@ class MemoryWriter:
             now_utc = datetime.now(timezone.utc).isoformat()
             entry_ts = record.entry_time.isoformat() if record.entry_time is not None else now_utc
             exit_ts = record.exit_time.isoformat() if record.exit_time is not None else now_utc
+            entry_cycle_id = self._enricher.resolve_entry_cycle_id(entry_ts)
+            regime = self._enricher.resolve_regime(entry_cycle_id)
 
             cur = self._db.execute(
                 """
@@ -64,11 +75,11 @@ class MemoryWriter:
                     trade_id, position_id, symbol, direction,
                     entry_price, exit_price, stop_price, target_price,
                     size, entry_time, exit_time, hold_duration_minutes,
-                    realized_pnl, r_multiple, exit_reason, status,
+                    realized_pnl, r_multiple, exit_reason, status, regime,
                     rank_at_entry, score_at_entry, rank_at_exit, score_at_exit,
                     entry_cycle_id, exit_cycle_id,
                     ingested_at, source_file
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     record.trade_id,
@@ -87,11 +98,12 @@ class MemoryWriter:
                     float(record.r_multiple),
                     record.exit_reason,
                     record.status,
+                    regime,
                     record.rank_at_entry,
                     record.score_at_entry,
                     record.rank_at_exit,
                     record.score_at_exit,
-                    None,  # entry_cycle_id — live integration wired in Phase 5+
+                    entry_cycle_id,
                     None,  # exit_cycle_id — live integration wired in Phase 5+
                     now_utc,
                     None,  # source_file — live writes have no source file
@@ -250,15 +262,48 @@ class MemoryWriter:
         now_utc: str,
     ) -> None:
         """Insert or update the trade_features row for a newly inserted trade."""
+        snapshot = self._enricher.reconstruct_entry_snapshot(
+            record.symbol,
+            entry_ts,
+            existing_score=record.score_at_entry,
+        )
         if features is None:
             # Stub row — all feature columns NULL
             self._db.execute(
                 """
-                INSERT OR IGNORE INTO trade_features
-                    (trade_id, symbol, captured_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO trade_features (
+                    trade_id, symbol,
+                    roc_5, roc_10, roc_20, acceleration,
+                    rvol_at_entry, vwap_deviation_at_entry, range_position_at_entry,
+                    raw_score, score_at_entry,
+                    close_at_entry, volume_at_entry, vwap_at_entry, atr_at_entry,
+                    high_20, low_20, bar_count_used,
+                    captured_at, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
-                (record.trade_id, record.symbol, entry_ts, now_utc, now_utc),
+                (
+                    record.trade_id,
+                    record.symbol,
+                    snapshot.roc_5,
+                    snapshot.roc_10,
+                    snapshot.roc_20,
+                    snapshot.acceleration,
+                    snapshot.rvol_at_entry,
+                    snapshot.vwap_deviation_at_entry,
+                    snapshot.range_position_at_entry,
+                    snapshot.raw_score,
+                    snapshot.score_at_entry,
+                    snapshot.close_at_entry,
+                    snapshot.volume_at_entry,
+                    snapshot.vwap_at_entry,
+                    snapshot.atr_at_entry,
+                    snapshot.high_20,
+                    snapshot.low_20,
+                    snapshot.bar_count_used,
+                    snapshot.captured_at or entry_ts,
+                    now_utc,
+                    now_utc,
+                ),
             )
         else:
             self._db.execute(
@@ -266,24 +311,33 @@ class MemoryWriter:
                 INSERT OR IGNORE INTO trade_features (
                     trade_id, symbol,
                     roc_5, roc_10, roc_20, acceleration,
-                    rvol, vwap_deviation, range_position,
-                    raw_score, normalized_score,
+                    rvol_at_entry, vwap_deviation_at_entry, range_position_at_entry,
+                    raw_score, score_at_entry,
+                    close_at_entry, volume_at_entry, vwap_at_entry, atr_at_entry,
+                    high_20, low_20, bar_count_used,
                     captured_at, created_at, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     record.trade_id,
                     record.symbol,
-                    features.roc_5,
-                    features.roc_10,
-                    features.roc_20,
-                    features.acceleration,
-                    features.rvol,
-                    features.vwap_deviation,
-                    features.range_position,
-                    features.raw_score,
-                    features.normalized_score,
-                    entry_ts,
+                    features.roc_5 if features.roc_5 is not None else snapshot.roc_5,
+                    features.roc_10 if features.roc_10 is not None else snapshot.roc_10,
+                    features.roc_20 if features.roc_20 is not None else snapshot.roc_20,
+                    features.acceleration if features.acceleration is not None else snapshot.acceleration,
+                    features.rvol if features.rvol is not None else snapshot.rvol_at_entry,
+                    features.vwap_deviation if features.vwap_deviation is not None else snapshot.vwap_deviation_at_entry,
+                    features.range_position if features.range_position is not None else snapshot.range_position_at_entry,
+                    features.raw_score if features.raw_score is not None else snapshot.raw_score,
+                    features.normalized_score if features.normalized_score is not None else snapshot.score_at_entry,
+                    float(features.close) if features.close is not None else snapshot.close_at_entry,
+                    float(features.volume) if features.volume is not None else snapshot.volume_at_entry,
+                    snapshot.vwap_at_entry,
+                    snapshot.atr_at_entry,
+                    snapshot.high_20,
+                    snapshot.low_20,
+                    snapshot.bar_count_used,
+                    snapshot.captured_at or entry_ts,
                     now_utc,
                     now_utc,
                 ),
@@ -342,6 +396,9 @@ class MemoryAwarePaperTradingLoop(PaperTradingLoop):
 
     def _run_cycle(self) -> None:
         """Run the full cycle (parent), then persist the ranking cycle to DB."""
+        ranked_before = self._ranking_cycle.get_latest()
+        if ranked_before is not None:
+            self._memory_writer.write_cycle(ranked_before)
         super()._run_cycle()
         # Persist whichever cycle the loop just consumed.
         # get_latest() is idempotent and returns None if no cycle exists yet.

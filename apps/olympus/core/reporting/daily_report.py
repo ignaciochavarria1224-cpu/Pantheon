@@ -206,8 +206,8 @@ class DailyReportGenerator:
                 t.hold_duration_minutes, t.realized_pnl,
                 t.r_multiple, t.exit_reason,
                 t.rank_at_entry, t.score_at_entry,
-                tf.roc_20, tf.rvol, tf.vwap_deviation, tf.range_position,
-                tf.normalized_score, tf.atr_at_entry
+                tf.roc_20, tf.rvol_at_entry, tf.vwap_deviation_at_entry, tf.range_position_at_entry,
+                tf.score_at_entry AS feature_score_at_entry, tf.atr_at_entry
             FROM trades t
             LEFT JOIN trade_features tf ON t.trade_id = tf.trade_id
             WHERE t.exit_time >= ? AND t.exit_time <= ?

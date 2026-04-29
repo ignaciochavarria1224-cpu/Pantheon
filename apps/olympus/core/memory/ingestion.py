@@ -16,6 +16,7 @@ from typing import Optional
 
 from core.logger import get_logger
 from core.memory.database import Database
+from core.memory.enrichment import TradeContextEnricher
 
 logger = get_logger(__name__)
 
@@ -63,10 +64,15 @@ class Ingestion:
         db: Database,
         trades_dir: Path,
         rankings_dir: Path,
+        allow_network_fallback: bool = False,
     ) -> None:
         self._db = db
         self._trades_dir = trades_dir
         self._rankings_dir = rankings_dir
+        self._enricher = TradeContextEnricher(
+            db,
+            allow_network_fallback=allow_network_fallback,
+        )
         logger.info(
             "Ingestion initialized (trades=%s, rankings=%s)",
             trades_dir, rankings_dir,
@@ -221,6 +227,8 @@ class Ingestion:
         now_utc = datetime.now(timezone.utc).isoformat()
         entry_time = _ensure_utc_iso(data.get("entry_time"))
         exit_time = _ensure_utc_iso(data.get("exit_time"))
+        entry_cycle_id = self._enricher.resolve_entry_cycle_id(entry_time) if entry_time else None
+        regime = self._enricher.resolve_regime(entry_cycle_id)
 
         cur = self._db.execute(
             """
@@ -228,11 +236,11 @@ class Ingestion:
                 trade_id, position_id, symbol, direction,
                 entry_price, exit_price, stop_price, target_price,
                 size, entry_time, exit_time, hold_duration_minutes,
-                realized_pnl, r_multiple, exit_reason, status,
+                realized_pnl, r_multiple, exit_reason, status, regime,
                 rank_at_entry, score_at_entry, rank_at_exit, score_at_exit,
                 entry_cycle_id, exit_cycle_id,
                 ingested_at, source_file
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 data["trade_id"],
@@ -251,11 +259,12 @@ class Ingestion:
                 float(data["r_multiple"]),
                 data["exit_reason"],
                 data.get("status", "closed"),
+                regime,
                 data.get("rank_at_entry"),
                 data.get("score_at_entry"),
                 data.get("rank_at_exit"),
                 data.get("score_at_exit"),
-                None,  # entry_cycle_id — NULL for historical trades
+                entry_cycle_id,
                 None,  # exit_cycle_id — NULL for historical trades
                 now_utc,
                 filepath.name,
@@ -263,14 +272,44 @@ class Ingestion:
         )
 
         if cur.rowcount > 0:
-            # Trade was newly inserted — create stub trade_features row
+            snapshot = self._enricher.reconstruct_entry_snapshot(
+                data["symbol"],
+                entry_time or now_utc,
+                existing_score=data.get("score_at_entry"),
+            )
             self._db.execute(
                 """
-                INSERT OR IGNORE INTO trade_features
-                    (trade_id, symbol, captured_at)
-                VALUES (?, ?, ?)
+                INSERT OR IGNORE INTO trade_features (
+                    trade_id, symbol,
+                    roc_5, roc_10, roc_20, acceleration,
+                    rvol_at_entry, vwap_deviation_at_entry, range_position_at_entry,
+                    raw_score, score_at_entry,
+                    close_at_entry, volume_at_entry, vwap_at_entry, atr_at_entry,
+                    high_20, low_20, bar_count_used,
+                    captured_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
-                (data["trade_id"], data["symbol"], entry_time or now_utc),
+                (
+                    data["trade_id"],
+                    data["symbol"],
+                    snapshot.roc_5,
+                    snapshot.roc_10,
+                    snapshot.roc_20,
+                    snapshot.acceleration,
+                    snapshot.rvol_at_entry,
+                    snapshot.vwap_deviation_at_entry,
+                    snapshot.range_position_at_entry,
+                    snapshot.raw_score,
+                    snapshot.score_at_entry,
+                    snapshot.close_at_entry,
+                    snapshot.volume_at_entry,
+                    snapshot.vwap_at_entry,
+                    snapshot.atr_at_entry,
+                    snapshot.high_20,
+                    snapshot.low_20,
+                    snapshot.bar_count_used,
+                    snapshot.captured_at or entry_time or now_utc,
+                ),
             )
             result.rows_written += 1
             logger.debug("Ingested trade %s from %s", data["trade_id"][:8], filepath.name)
