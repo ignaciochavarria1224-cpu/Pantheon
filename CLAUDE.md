@@ -81,3 +81,20 @@ here are.
 - **Secrets never committed;** local-first and private.
 - The owner is non-technical: explain plainly, and the owner is the only gate on anything
   that risks real money.
+
+---
+
+## Git workflow (standing rule — the owner has set this)
+
+- **Repo:** `github.com/ignaciochavarria1224-cpu/Pantheon` — remote `origin`, branch `main`.
+  Local home: `C:\Users\ignac\Documents\Pantheon`.
+- **Commit AND push after every completed, working step.** Not every tiny edit — each time a
+  change is finished and verified, make one clear, descriptive commit and **push to GitHub
+  immediately**. The backup must always be current. Do this automatically; the owner does not
+  need to ask each time.
+- **Before each commit, run `git status`** and confirm no secrets (`.env`), database files,
+  `venv/`, or logs are staged. These are git-ignored — keep it that way; never commit them.
+- End every commit message with the trailer:
+  `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`
+- If a push fails (e.g., auth or network), tell the owner plainly rather than leaving work
+  unpushed and silent.
