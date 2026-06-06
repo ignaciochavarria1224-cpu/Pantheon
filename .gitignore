@@ -1,0 +1,29 @@
+# --- Secrets: NEVER commit ---
+.env
+*.env
+!.env.example
+
+# --- Databases / local data (kept local, backed up separately) ---
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# --- Python ---
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# --- Logs ---
+logs/
+*.log
+
+# --- OS / editor junk ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
