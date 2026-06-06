@@ -33,16 +33,31 @@ and the whole foundation is built on it.
 - **Phase 0 — COMPLETE (2026-06-06).** Clean repo home, all system folders, both
   constitutions, the Olympus Python environment (venv + pinned deps, import-verified on
   Python 3.14), and the strategy docs are in place and pushed to GitHub.
-- **NEXT — Phase 1: The Correct Foundation.** Strategy-agnostic. Build, in order:
-  1. The corrected, **empty** SQLite database (WAL): `strategy_id` + `experiment_id` +
-     environment marker on every record; one append-only trade-lifecycle (entry -> fill ->
-     exit); provenance labels; an honest quality model (only signals the system emits).
-  2. The **confirmed-state recording spine** (Article II): submit -> poll broker until
-     terminal -> record only broker-confirmed fills at broker price/qty; reconcile to broker
-     on startup. Port the *repaired* fill-confirmation engine + reconciler from the old
-     Olympus as reference (see "Reference material" below).
-  3. **Market-data ingestion** for the watchlist (the "reliably collecting data" milestone).
-  4. A clean **`Strategy` interface** + `strategy_id` plumbing, empty of real strategies.
+- **Phase 1 — The Correct Foundation: BUILT & UNIT-VERIFIED (2026-06-06).** All four steps
+  are coded, tested (36 passing tests), and pushed. Strategy-agnostic throughout. Layout under
+  `olympus/`: `config/settings.py` (lean, key-free at import), `core/logger.py`, `core/db/`
+  (`schema.sql` + `database.py` + `repository.py`), `core/broker/alpaca.py`, `core/trading/`
+  (`models.py` + `execution.py` + `reconciliation.py`), `core/data/` (`fetcher.py` +
+  `normalizer.py` + `ingestion.py`), `core/strategy/base.py`, `tests/`, and `main.py`.
+  1. **DB (done):** WAL SQLite. `orders` (intent only), `fills` (broker-confirmed only —
+     `CHECK confirmed = 1`), `positions`, `trades`, `system_events`, `market_data`. Every
+     lifecycle table carries `strategy_id` + `experiment_id` + `environment`; provenance
+     columns throughout; `v_trade_quality` derives "clean" solely from linked confirmed fills.
+  2. **Confirmed-state spine (done):** ported fill-confirmation engine (submit -> poll until
+     terminal -> record only broker-truth fills; unconfirmed -> `order_unfilled` event, no
+     phantom state) + broker reconciler (broker wins, paper-guarded repair). The Article II
+     unit suite the first Olympus never had now exists.
+  3. **Market-data ingestion (done):** ported fetcher/normalizer + idempotent `upsert_bars`
+     (no duplicate rows). Unit-tested with a mocked fetcher.
+  4. **`Strategy` interface (done):** `Signal` + abstract `Strategy` (`strategy_id` /
+     `experiment_id` identity), empty of real strategies; tag plumbing verified end-to-end.
+  - `main.py` runs a restart-safe startup pass: init DB -> (with keys) healthcheck ->
+    reconcile-to-broker -> ingest. Runs cleanly on the database-only path today.
+- **NEXT — finish Phase 1 verification, then Phase 2.** Remaining for Phase 1: the **live
+  smoke-runs** that need `olympus/.env` paper keys — (a) `main.py` against the paper feed:
+  broker healthcheck, startup reconcile, and one real ingestion of the watchlist; (b) confirm
+  no duplicate `market_data` rows on a second run. After that, Phase 2 (paper-trading loop +
+  the 7 strategies) begins.
 
 ## Owner to-dos still open (do not block Phase 1's early steps)
 
