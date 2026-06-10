@@ -33,8 +33,9 @@ and the whole foundation is built on it.
 - **Phase 0 — COMPLETE (2026-06-06).** Clean repo home, all system folders, both
   constitutions, the Olympus Python environment (venv + pinned deps, import-verified on
   Python 3.14), and the strategy docs are in place and pushed to GitHub.
-- **Phase 1 — The Correct Foundation: BUILT & UNIT-VERIFIED (2026-06-06).** All four steps
-  are coded, tested (36 passing tests), and pushed. Strategy-agnostic throughout. Layout under
+- **Phase 1 — The Correct Foundation: COMPLETE (2026-06-09).** All four steps are coded,
+  tested (36 passing tests), live-verified against the Alpaca paper feed, and pushed.
+  Strategy-agnostic throughout. Layout under
   `olympus/`: `config/settings.py` (lean, key-free at import), `core/logger.py`, `core/db/`
   (`schema.sql` + `database.py` + `repository.py`), `core/broker/alpaca.py`, `core/trading/`
   (`models.py` + `execution.py` + `reconciliation.py`), `core/data/` (`fetcher.py` +
@@ -52,18 +53,21 @@ and the whole foundation is built on it.
   4. **`Strategy` interface (done):** `Signal` + abstract `Strategy` (`strategy_id` /
      `experiment_id` identity), empty of real strategies; tag plumbing verified end-to-end.
   - `main.py` runs a restart-safe startup pass: init DB -> (with keys) healthcheck ->
-    reconcile-to-broker -> ingest. Runs cleanly on the database-only path today.
-- **NEXT — finish Phase 1 verification, then Phase 2.** Remaining for Phase 1: the **live
-  smoke-runs** that need `olympus/.env` paper keys — (a) `main.py` against the paper feed:
-  broker healthcheck, startup reconcile, and one real ingestion of the watchlist; (b) confirm
-  no duplicate `market_data` rows on a second run. After that, Phase 2 (paper-trading loop +
-  the 7 strategies) begins.
+    reconcile-to-broker -> ingest. **Live-verified 2026-06-09:** authenticated against the
+    Alpaca paper account, startup reconcile reported clean, ingested 105 daily bars
+    (21 × 5 watchlist symbols) into `market_data`; a second run inserted **0** new rows
+    (idempotent — no duplicates). `olympus/.env` now holds the owner's paper keys (git-ignored).
+- **NEXT — Phase 2: the paper-trading loop, fully wired.** Begins now that the foundation is
+  complete. Wire entry/exit/sizing/risk gates + the reconciler act-path + a queryable decision
+  trail (every entry, exit, and rejection); add Article V safety + kill switch (tested in
+  paper); then run the first of the owner's 7 chosen strategies end-to-end in paper, fully
+  autonomous, every control actually executing. See `BUILD_PLAN.md` Phase 2.
 
-## Owner to-dos still open (do not block Phase 1's early steps)
+## Owner to-dos still open
 
-1. Create `olympus/.env` from `olympus/.env.example` and add Alpaca **paper** keys
-   (never commit `.env` — it is git-ignored).
-2. Verify **BitLocker** is on for `C:` (Start -> "Manage BitLocker").
+1. ✅ DONE (2026-06-09) — `olympus/.env` created with Alpaca **paper** keys (git-ignored).
+2. Verify **BitLocker** is on for `C:` (Start -> "Manage BitLocker") before the database
+   holds anything worth protecting.
 
 ---
 
